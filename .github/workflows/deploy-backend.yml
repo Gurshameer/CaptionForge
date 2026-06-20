@@ -1,0 +1,27 @@
+name: Deploy Backend to Hugging Face Spaces
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "backend/**"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          cd backend
+          git init
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add .
+          git commit -m "Deploy backend from GitHub"
+          git push --force https://Gurshameer:$HF_TOKEN@huggingface.co/spaces/Gurshameer/CaptionForge-API main
