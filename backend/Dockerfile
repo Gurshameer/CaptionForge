@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create a non-root user (Hugging Face Spaces requirement)
 RUN useradd -m -u 1000 user
 USER user
+ENV PATH="/home/user/.local/bin:$PATH"
 
 # Set the working directory
 WORKDIR /home/user/app
