@@ -65,7 +65,7 @@ export default function ResultsPanel({ taskId, downloadUrl, onReset }) {
           
           <a 
             href={apiUrl(downloadUrl)} 
-            download={`subtitle_${taskId}.srt`}
+            download
             className="btn btn-primary btn-icon"
           >
             <Download size={18} />

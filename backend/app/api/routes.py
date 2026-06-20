@@ -105,7 +105,8 @@ async def upload_video(
         "detected_language": None,
         "error": None,
         "video_path": str(video_path),
-        "srt_path": None
+        "srt_path": None,
+        "original_filename": file.filename
     }
 
     # 5. Dispatch task to FastAPI BackgroundTasks
@@ -157,8 +158,11 @@ async def download_srt(task_id: str):
         logger.error(f"Task status is COMPLETED, but SRT file is missing at path: {srt_path}")
         raise HTTPException(status_code=404, detail="Subtitle file not found on disk")
 
+    original_name = task.get("original_filename", f"subtitle_{task_id}")
+    base_name = os.path.splitext(original_name)[0]
+    
     return FileResponse(
         path=srt_path,
         media_type="application/x-subrip",
-        filename=f"subtitle_{task_id}.srt"
+        filename=f"{base_name}.srt"
     )
