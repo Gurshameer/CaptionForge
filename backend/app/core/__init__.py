@@ -1,0 +1,1 @@
+# CaptionForge Core Package
