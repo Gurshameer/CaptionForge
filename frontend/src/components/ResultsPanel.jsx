@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Download, Copy, Check, FileCode, AlertCircle, RefreshCw } from 'lucide-react';
+import { apiUrl } from '../api';
 
 export default function ResultsPanel({ taskId, downloadUrl, onReset }) {
   const [srtContent, setSrtContent] = useState('');
@@ -12,7 +13,7 @@ export default function ResultsPanel({ taskId, downloadUrl, onReset }) {
       if (!downloadUrl) return;
       try {
         setLoading(true);
-        const response = await fetch(downloadUrl);
+        const response = await fetch(apiUrl(downloadUrl));
         if (!response.ok) {
           throw new Error('Failed to retrieve SRT content.');
         }
@@ -63,7 +64,7 @@ export default function ResultsPanel({ taskId, downloadUrl, onReset }) {
           </button>
           
           <a 
-            href={downloadUrl} 
+            href={apiUrl(downloadUrl)} 
             download={`subtitle_${taskId}.srt`}
             className="btn btn-primary btn-icon"
           >

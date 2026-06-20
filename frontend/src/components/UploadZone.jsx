@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { Upload, Film, X } from 'lucide-react';
+import { apiUrl } from '../api';
 
 const ALLOWED_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm', '.mpeg', '.wmv'];
 const MAX_SIZE_MB = 100;
@@ -77,7 +78,7 @@ export default function UploadZone({ onUpload, isProcessing }) {
     formData.append('file', file);
 
     try {
-      const res = await fetch('/api/v1/subtitles/upload', {
+      const res = await fetch(apiUrl('/api/v1/subtitles/upload'), {
         method: 'POST',
         body: formData,
       });

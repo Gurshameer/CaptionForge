@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { apiUrl } from '../api';
 import { 
   Music, 
   Languages, 
@@ -32,7 +33,7 @@ export default function ProgressTracker({ taskId, onComplete, onFailure }) {
 
     const pollStatus = async () => {
       try {
-        const response = await fetch(`/api/v1/subtitles/status/${taskId}`);
+        const response = await fetch(apiUrl(`/api/v1/subtitles/status/${taskId}`));
         if (!response.ok) {
           throw new Error(`Failed to fetch status: ${response.statusText}`);
         }
