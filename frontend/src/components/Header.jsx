@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-
+import logo from '../assets/logo.png';
 export default function Header() {
   const [scrolled, setScrolled] = useState(false);
 
@@ -18,7 +18,7 @@ export default function Header() {
       <nav className="nav wrap">
         {/* Brand — left side */}
         <div className="brand">
-          <img src="/logo.png" alt="CaptionForge Logo" className="brand-logo-img" />
+          <img src={logo} alt="CaptionForge Logo" className="brand-logo-img" />
           <span className="brand-name">CaptionForge</span>
         </div>
 
