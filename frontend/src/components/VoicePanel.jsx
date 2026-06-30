@@ -334,7 +334,6 @@ export default function VoicePanel({ voiceInput, defaultLanguage }) {
         <button
           className="btn btn-primary btn-full"
           onClick={handleGenerate}
-          disabled={!text.trim() || (mode === 'clone' && !refFile)}
         >
           <Mic size={15} /> Generate Voice
         </button>
