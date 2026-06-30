@@ -163,16 +163,12 @@ async def upload_youtube_url(
     logger.info(f"Received URL upload request. URL: {request.url}, Task ID: {task_id}")
 
     try:
-        # Download synchronously or ideally asynchronously? 
-        # For simplicity, do it before queuing, or queue it too.
-        # Actually yt-dlp can take a while. We should queue it as part of the background task.
-        # But for now, we can download it synchronously and return 202, or 
-        # we can put yt-dlp in the background task. 
-        # Given the architecture, doing yt-dlp synchronously blocks the API response.
-        # Let's do it synchronously here for simplicity, or modify process_subtitle_generation.
-        # Let's do yt-dlp synchronously as the prompt didn't say otherwise, and it's easier to handle errors.
+        # yt-dlp download runs synchronously here so we can report errors
+        # immediately and cleanly before queuing the subtitle generation task.
+        # yt_download_service raises HTTPException with a user-friendly detail
+        # on failure — we let it propagate directly to FastAPI's error handler.
         video_path = download_youtube_video(request.url, task_id)
-        
+
         # Initialize task DB entry
         tasks_db[task_id] = {
             "task_id": task_id,
@@ -201,9 +197,20 @@ async def upload_youtube_url(
             status="PENDING",
             message="YouTube video downloaded successfully. Subtitle generation queued."
         )
+    except HTTPException:
+        # Re-raise HTTPExceptions from yt_download_service as-is so the
+        # user-friendly detail message reaches the frontend unchanged.
+        raise
     except Exception as e:
-        logger.error(f"Failed to process YouTube URL: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to process YouTube URL: {str(e)}")
+        # Catch any other unexpected errors and hide internal details.
+        logger.error(f"Unexpected error processing YouTube URL: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "An unexpected error occurred while processing your request. "
+                "Please try again or upload the video file directly."
+            )
+        )
 
 @router.get("/status/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(task_id: str):
