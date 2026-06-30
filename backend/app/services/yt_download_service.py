@@ -24,6 +24,7 @@ def download_youtube_video(url: str, task_id: str) -> Path:
         'quiet': False,
         'no_warnings': True,
         'impersonate': ImpersonateTarget.from_str('chrome'),
+        'extractor_args': {'youtube': {'player_client': ['android']}},
         'legacyserverconnect': True,
         'nocheckcertificate': True,
     }
