@@ -10,6 +10,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: huggingface-space
+      url: https://Gurshameer-CaptionForge-API.hf.space/docs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
