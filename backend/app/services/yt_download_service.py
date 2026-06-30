@@ -7,45 +7,36 @@ Architecture
 ------------
   download_youtube_video(url, task_id)   ← single public entry point
         │
-        ├─ [provider = "rapidapi"]  → _provider_rapidapi()
-        ├─ [provider = "ytdlp"]     → _provider_ytdlp()        (yt-dlp direct, legacy)
-        └─ [provider = "auto"]      → rapidapi first, yt-dlp on failure  ← default
+        ├─ [provider = "ytmp3"]    → _provider_ytmp3()       ← DEFAULT (CDN URLs, no IP lock)
+        ├─ [provider = "ytapi"]    → _provider_ytapi()       ← returns IP-locked googlevideo URLs
+        ├─ [provider = "ytdlp"]    → _provider_ytdlp()       ← yt-dlp direct (fails on HF IPs)
+        └─ [provider = "auto"]     → ytmp3 → ytdlp           ← default chain
 
-Adding a second provider
-------------------------
-  1. Write  def _provider_<name>(url, task_id) -> Path
-  2. Register it in PROVIDERS dict at the bottom of this file
-  3. Set  YT_DOWNLOAD_PROVIDER=<name>  in HF Secrets (or "auto" to chain it)
+WHY ytmp3 instead of ytapi
+--------------------------
+The yt-api (ytjar) /dl endpoint returns raw signed googlevideo.com URLs.
+These URLs are IP-locked to the RapidAPI server IP that fetched them.
+When HF Spaces (a different IP) tries to download, YouTube returns 403 Forbidden.
+
+youtube-mp36 (also ytjar) returns URLs served from their own CDN:
+  https://media.ytmp3.io/...
+These are NOT IP-locked and can be downloaded from HF Spaces without 403.
+
+API used (PRIMARY)
+------------------
+  youtube-mp36 by ytjar  →  https://rapidapi.com/ytjar/api/youtube-mp36
+  Same RAPIDAPI_KEY — just subscribe to this API too (free tier available)
+  Host:      youtube-mp36.p.rapidapi.com
+  Endpoint:  GET /dl?id=<VIDEO_ID>
+  Response:  { "status": "ok", "link": "<CDN_URL>", "title": "...", "duration": "..." }
 
 Environment variables
 ---------------------
-  YT_DOWNLOAD_PROVIDER   "auto" | "rapidapi" | "ytdlp"   (default: "auto")
-  RAPIDAPI_KEY           Your RapidAPI key from rapidapi.com dashboard
-  RAPIDAPI_HOST          API host header (default: "yt-api.p.rapidapi.com")
+  YT_DOWNLOAD_PROVIDER   "auto" | "ytmp3" | "ytapi" | "ytdlp"  (default: "auto")
+  RAPIDAPI_KEY           Your RapidAPI key (works for both ytmp3 and ytapi)
   YTDLP_PROXY            Optional proxy URL for the yt-dlp fallback path
   YTDLP_COOKIES_FILE     Optional path to a Netscape cookies file
   YOUTUBE_COOKIES        Optional raw Netscape cookie text (HF Secrets friendly)
-
-API used
---------
-  YT-API by ytjar  →  https://rapidapi.com/ytjar/api/yt-api
-  Endpoint:  GET https://yt-api.p.rapidapi.com/dl?id=<VIDEO_ID>
-
-  Response shape (confirmed from live response):
-    {
-      "status": "OK",
-      "id": "arj7oStGLkU",
-      "formats": [                     ← muxed video+audio (easiest: itag 18 = 360p)
-        { "itag": 18, "url": "https://redirector.googlevideo.com/...",
-          "mimeType": "video/mp4; codecs=...", "quality": "medium",
-          "audioQuality": "AUDIO_QUALITY_LOW", ... }
-      ],
-      "adaptiveFormats": [             ← separate video-only & audio-only streams
-        { "itag": 140, "url": "...", "mimeType": "audio/mp4; codecs=...", ... },
-        { "itag": 251, "url": "...", "mimeType": "audio/webm; codecs=...", ... },
-        ...
-      ]
-    }
 """
 
 from __future__ import annotations
@@ -68,10 +59,10 @@ from fastapi import HTTPException
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-_DOWNLOAD_TIMEOUT = 120   # seconds for the actual file download
-_API_TIMEOUT      = 20    # seconds for the RapidAPI metadata call
+_DOWNLOAD_TIMEOUT = 120
+_API_TIMEOUT      = 20
 _MAX_RETRIES      = 3
-_BACKOFF_BASE     = 2     # wait = BACKOFF_BASE ** attempt  → 2s, 4s
+_BACKOFF_BASE     = 2
 
 _PLAYER_CLIENTS = [
     ['android'],
@@ -100,33 +91,21 @@ def _ensure_upload_dir() -> None:
 
 
 def _extract_video_id(url: str) -> str:
-    """Extract the 11-char YouTube video ID from any common URL format."""
+    """Extract the YouTube video ID from any common URL format."""
     parsed = urlparse(url.strip())
-
-    # youtu.be/<ID>
     if parsed.netloc in ('youtu.be', 'www.youtu.be'):
-        vid = parsed.path.lstrip('/')
-        if vid:
-            return vid.split('?')[0]
-
-    # youtube.com/watch?v=<ID>
+        return parsed.path.lstrip('/').split('?')[0]
     qs = parse_qs(parsed.query)
     if 'v' in qs:
         return qs['v'][0]
-
-    # youtube.com/shorts/<ID>  or  /embed/<ID>  or  /v/<ID>
     match = re.search(r'/(?:shorts|embed|v)/([a-zA-Z0-9_-]{11})', parsed.path)
     if match:
         return match.group(1)
-
     raise ValueError(f"Could not extract video ID from URL: {url!r}")
 
 
 def _fetch_file_from_url(direct_url: str, dest_path: Path) -> Path:
-    """
-    Stream-download *direct_url* to *dest_path*.
-    These are short-lived signed googlevideo.com URLs — fetch immediately.
-    """
+    """Stream-download *direct_url* to *dest_path*."""
     logger.info(f"[YT-DL] Downloading stream → {dest_path.name}")
     try:
         resp = requests.get(
@@ -135,177 +114,188 @@ def _fetch_file_from_url(direct_url: str, dest_path: Path) -> Path:
         )
         resp.raise_for_status()
         with open(dest_path, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=1 << 20):  # 1 MB chunks
+            for chunk in resp.iter_content(chunk_size=1 << 20):
                 fh.write(chunk)
-
         size_kb = dest_path.stat().st_size // 1024 if dest_path.exists() else 0
         if size_kb == 0:
             raise OSError(f"Downloaded file is empty: {dest_path}")
-
-        logger.info(f"[YT-DL] Stream download complete: {dest_path.name} ({size_kb} KB)")
+        logger.info(f"[YT-DL] Download complete: {dest_path.name} ({size_kb} KB)")
         return dest_path
-
     except requests.RequestException as exc:
         raise RuntimeError(f"Stream download failed: {exc}") from exc
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Provider A — YT-API (ytjar) via RapidAPI
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# API:  https://rapidapi.com/ytjar/api/yt-api
-# Host: yt-api.p.rapidapi.com
-# Endpoint: GET /dl?id=<VIDEO_ID>
-#
-# To switch to a different RapidAPI service later:
-#   1. Change RAPIDAPI_HOST env var to the new host
-#   2. Update _rapidapi_get_stream_url() to match the new response JSON shape
-#   Everything else (retry, file download, error handling) stays the same.
-#
-def _rapidapi_get_stream_url(video_url: str) -> tuple[str, str]:
-    """
-    Call YT-API, pick the best audio (or muxed) stream, return (url, ext).
-    Raises RuntimeError with a clear message on any failure.
-    """
-    api_key  = os.environ.get("RAPIDAPI_KEY", "").strip()
-    api_host = os.environ.get("RAPIDAPI_HOST", "yt-api.p.rapidapi.com").strip()
-
+def _rapidapi_headers(host: str) -> dict:
+    api_key = os.environ.get("RAPIDAPI_KEY", "").strip()
     if not api_key:
-        raise RuntimeError(
-            "RAPIDAPI_KEY is not set. Add it to your HF Space secrets."
-        )
+        raise RuntimeError("RAPIDAPI_KEY is not set. Add it to your HF Space secrets.")
+    return {"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": host}
 
-    # Extract video ID from the YouTube URL
+
+def _check_rapidapi_response(resp: requests.Response, host: str) -> dict:
+    """Raise RuntimeError with a clear message for common HTTP error codes."""
+    if resp.status_code == 401:
+        raise RuntimeError(f"RapidAPI key invalid or expired (HTTP 401) for host {host}.")
+    if resp.status_code == 403:
+        raise RuntimeError(
+            f"RapidAPI access forbidden (HTTP 403) for {host}. "
+            "Make sure you've subscribed to this API at rapidapi.com."
+        )
+    if resp.status_code == 429:
+        raise RuntimeError(
+            f"RapidAPI rate limit hit (HTTP 429) for {host}. Check your monthly quota."
+        )
+    if not resp.ok:
+        raise RuntimeError(f"RapidAPI HTTP {resp.status_code} from {host}: {resp.text[:300]}")
     try:
-        video_id = _extract_video_id(video_url)
+        return resp.json()
+    except ValueError:
+        raise RuntimeError(f"RapidAPI non-JSON response from {host}.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Provider A — youtube-mp36 (ytjar) ← RECOMMENDED / DEFAULT
+# ─────────────────────────────────────────────────────────────────────────────
+# Subscribe: https://rapidapi.com/ytjar/api/youtube-mp36  (free tier, same key)
+# Returns a CDN URL (NOT IP-locked googlevideo.com) → works from HF Spaces ✅
+#
+# Response shape:
+#   { "status": "ok", "link": "https://media.ytmp3.io/...", "title": "...", "duration": "..." }
+#
+_YTMP3_HOST = "youtube-mp36.p.rapidapi.com"
+
+def _provider_ytmp3(url: str, task_id: str) -> Path:
+    """
+    Download audio via youtube-mp36 API.
+    Returns CDN-hosted MP3 URL — not IP-locked, works from any server.
+    """
+    logger.info(f"[ytmp3] Provider starting for task {task_id}")
+
+    try:
+        video_id = _extract_video_id(url)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
 
-    endpoint = f"https://{api_host}/dl"
-    headers  = {
-        "X-RapidAPI-Key":  api_key,
-        "X-RapidAPI-Host": api_host,
-    }
-    params = {"id": video_id}
-
-    logger.info(f"[RapidAPI] GET {endpoint}?id={video_id}")
+    endpoint = f"https://{_YTMP3_HOST}/dl"
+    logger.info(f"[ytmp3] GET {endpoint}?id={video_id}")
 
     try:
-        resp = requests.get(endpoint, headers=headers, params=params,
-                            timeout=_API_TIMEOUT)
+        resp = requests.get(
+            endpoint,
+            headers=_rapidapi_headers(_YTMP3_HOST),
+            params={"id": video_id},
+            timeout=_API_TIMEOUT
+        )
     except requests.Timeout:
-        raise RuntimeError(
-            f"RapidAPI call timed out after {_API_TIMEOUT}s — service may be slow or down."
-        )
+        raise RuntimeError(f"[ytmp3] API call timed out after {_API_TIMEOUT}s.")
     except requests.ConnectionError as exc:
-        raise RuntimeError(f"Could not reach RapidAPI host '{api_host}': {exc}") from exc
+        raise RuntimeError(f"[ytmp3] Could not reach {_YTMP3_HOST}: {exc}") from exc
 
-    # ── HTTP-level errors ────────────────────────────────────────────────────
-    if resp.status_code == 401:
-        raise RuntimeError("RapidAPI key is invalid or expired (HTTP 401).")
-    if resp.status_code == 403:
-        raise RuntimeError("RapidAPI access forbidden — check your subscription plan (HTTP 403).")
-    if resp.status_code == 429:
+    data = _check_rapidapi_response(resp, _YTMP3_HOST)
+
+    status = data.get("status", "")
+    if status not in ("ok", "processing"):
         raise RuntimeError(
-            "RapidAPI rate limit hit (HTTP 429). "
-            "Check your monthly quota at rapidapi.com/ytjar/api/yt-api."
-        )
-    if not resp.ok:
-        raise RuntimeError(
-            f"RapidAPI returned HTTP {resp.status_code}: {resp.text[:300]}"
+            f"[ytmp3] API returned status={status!r}. "
+            f"Keys: {list(data.keys())}"
         )
 
-    # ── Parse JSON ───────────────────────────────────────────────────────────
-    try:
-        data = resp.json()
-    except ValueError:
+    # The API sometimes needs a short wait when status="processing"
+    if status == "processing":
+        logger.info("[ytmp3] Status=processing, waiting 3s then retrying once...")
+        time.sleep(3)
+        resp2 = requests.get(
+            endpoint,
+            headers=_rapidapi_headers(_YTMP3_HOST),
+            params={"id": video_id},
+            timeout=_API_TIMEOUT
+        )
+        data = _check_rapidapi_response(resp2, _YTMP3_HOST)
+        if data.get("status") != "ok" or not data.get("link"):
+            raise RuntimeError(f"[ytmp3] Still processing after retry. data={data}")
+
+    cdn_url = data.get("link", "").strip()
+    if not cdn_url:
         raise RuntimeError(
-            f"RapidAPI returned non-JSON content-type={resp.headers.get('content-type')}."
+            f"[ytmp3] No 'link' in response. Keys: {list(data.keys())}"
         )
 
-    if data.get("status") != "OK":
-        raise RuntimeError(
-            f"RapidAPI reported failure: status={data.get('status')!r}, "
-            f"keys={list(data.keys())}"
-        )
+    title = data.get("title", "unknown")
+    logger.info(f"[ytmp3] Got CDN link for: {title!r}")
 
-    logger.info(f"[RapidAPI] Got response for video id={data.get('id')!r} "
-                f"title={data.get('title','?')!r}")
-
-    # ── Stream selection strategy ─────────────────────────────────────────────
-    # Priority:
-    #   1. Audio-only streams from adaptiveFormats  (smallest, fastest download)
-    #   2. Muxed (video+audio) from formats         (itag 18 = 360p, always has audio)
-    #   3. Any adaptiveFormat with a URL            (last resort)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    adaptive = data.get("adaptiveFormats", [])
-    muxed    = data.get("formats", [])
-
-    # 1 — Audio-only adaptive streams
-    audio_streams = [
-        f for f in adaptive
-        if f.get("url") and f.get("mimeType", "").startswith("audio/")
-    ]
-    if audio_streams:
-        # Prefer mp4 audio (widely compatible), then webm/opus
-        mp4_audio = [f for f in audio_streams if "audio/mp4" in f.get("mimeType", "")]
-        chosen    = mp4_audio[0] if mp4_audio else audio_streams[0]
-        mime      = chosen.get("mimeType", "audio/mp4")
-        ext       = "m4a" if "mp4" in mime else "webm"
-        itag      = chosen.get("itag", "?")
-        logger.info(f"[RapidAPI] Selected audio-only stream: "
-                    f"itag={itag} mime={mime!r}")
-        return chosen["url"], ext
-
-    # 2 — Muxed formats (video+audio in one file, easiest to work with)
-    muxed_valid = [f for f in muxed if f.get("url")]
-    if muxed_valid:
-        # itag 18 = 360p mp4 (always present, smallest muxed)
-        itag18 = next((f for f in muxed_valid if f.get("itag") == 18), None)
-        chosen = itag18 or muxed_valid[0]
-        itag   = chosen.get("itag", "?")
-        label  = chosen.get("qualityLabel", "?")
-        logger.info(f"[RapidAPI] No audio-only stream; using muxed: "
-                    f"itag={itag} quality={label!r}")
-        return chosen["url"], "mp4"
-
-    # 3 — Any adaptive format with a URL (video-only, but better than nothing)
-    any_valid = [f for f in adaptive if f.get("url")]
-    if any_valid:
-        chosen = any_valid[0]
-        mime   = chosen.get("mimeType", "video/mp4")
-        ext    = "mp4" if "mp4" in mime else "webm"
-        logger.warning(f"[RapidAPI] Falling back to first available adaptive format "
-                       f"(may be video-only): itag={chosen.get('itag','?')}")
-        return chosen["url"], ext
-
-    raise RuntimeError(
-        f"RapidAPI response contained no usable stream URLs for video id={video_id!r}. "
-        f"Top-level keys: {list(data.keys())}"
-    )
-
-
-def _provider_rapidapi(url: str, task_id: str) -> Path:
-    """Download via YT-API (ytjar) on RapidAPI."""
-    logger.info(f"[RapidAPI] Provider starting for task {task_id}")
-
-    try:
-        stream_url, ext = _rapidapi_get_stream_url(url)
-    except RuntimeError as exc:
-        logger.error(f"[RapidAPI] API stage failed: {exc}")
-        raise  # re-raise so auto-chain can try next provider
-
-    dest = settings.upload_path / f"{task_id}.{ext}"
-    try:
-        return _fetch_file_from_url(stream_url, dest)
-    except RuntimeError as exc:
-        logger.error(f"[RapidAPI] File download stage failed: {exc}")
-        raise
+    dest = settings.upload_path / f"{task_id}.mp3"
+    return _fetch_file_from_url(cdn_url, dest)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Provider B — yt-dlp direct (legacy / fallback)
+# Provider B — yt-api (ytjar) — kept for reference, AVOID on HF Spaces
+# ─────────────────────────────────────────────────────────────────────────────
+# Returns raw googlevideo.com signed URLs that are IP-locked to RapidAPI's
+# servers → 403 Forbidden when downloaded from HF Spaces (different IP).
+# Only use this if you're running on the SAME machine as the API call.
+#
+_YTAPI_HOST = "yt-api.p.rapidapi.com"
+
+def _provider_ytapi(url: str, task_id: str) -> Path:
+    """
+    Download via yt-api (raw googlevideo.com URLs).
+    WARNING: Will get 403 on HF Spaces because URLs are IP-locked.
+    """
+    logger.warning(
+        "[ytapi] WARNING: yt-api returns IP-locked googlevideo.com URLs. "
+        "This will likely 403 on HF Spaces. Use 'ytmp3' provider instead."
+    )
+
+    try:
+        video_id = _extract_video_id(url)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    endpoint = f"https://{_YTAPI_HOST}/dl"
+    logger.info(f"[ytapi] GET {endpoint}?id={video_id}")
+
+    try:
+        resp = requests.get(
+            endpoint,
+            headers=_rapidapi_headers(_YTAPI_HOST),
+            params={"id": video_id},
+            timeout=_API_TIMEOUT
+        )
+    except requests.Timeout:
+        raise RuntimeError(f"[ytapi] API call timed out.")
+    except requests.ConnectionError as exc:
+        raise RuntimeError(f"[ytapi] Connection error: {exc}") from exc
+
+    data = _check_rapidapi_response(resp, _YTAPI_HOST)
+
+    if data.get("status") != "OK":
+        raise RuntimeError(f"[ytapi] status={data.get('status')!r}")
+
+    # Try audio-only first, then muxed
+    adaptive = data.get("adaptiveFormats", [])
+    muxed    = data.get("formats", [])
+
+    audio = [f for f in adaptive if f.get("url") and "audio/" in f.get("mimeType","")]
+    if audio:
+        mp4_audio = [f for f in audio if "audio/mp4" in f.get("mimeType","")]
+        chosen = mp4_audio[0] if mp4_audio else audio[0]
+        ext = "m4a" if "mp4" in chosen.get("mimeType","") else "webm"
+        logger.info(f"[ytapi] Audio stream itag={chosen.get('itag')}")
+        dest = settings.upload_path / f"{task_id}.{ext}"
+        return _fetch_file_from_url(chosen["url"], dest)
+
+    muxed_valid = [f for f in muxed if f.get("url")]
+    if muxed_valid:
+        chosen = next((f for f in muxed_valid if f.get("itag") == 18), muxed_valid[0])
+        logger.info(f"[ytapi] Muxed stream itag={chosen.get('itag')}")
+        dest = settings.upload_path / f"{task_id}.mp4"
+        return _fetch_file_from_url(chosen["url"], dest)
+
+    raise RuntimeError("[ytapi] No usable stream URLs in response.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Provider C — yt-dlp direct (legacy)
 # ─────────────────────────────────────────────────────────────────────────────
 def _build_ytdlp_opts(task_id: str, player_clients: list[str]) -> dict:
     outtmpl = str(settings.upload_path / f"{task_id}.%(ext)s")
@@ -321,7 +311,6 @@ def _build_ytdlp_opts(task_id: str, player_clients: list[str]) -> dict:
         "socket_timeout":      30,
         "retries":             1,
     }
-
     proxy = os.environ.get("YTDLP_PROXY", "").strip()
     if proxy:
         opts["proxy"] = proxy
@@ -330,7 +319,6 @@ def _build_ytdlp_opts(task_id: str, player_clients: list[str]) -> dict:
     cookie_file = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
     if cookie_file and os.path.isfile(cookie_file):
         opts["cookiefile"] = cookie_file
-        logger.info(f"[yt-dlp] Using cookies file: {cookie_file}")
     else:
         cookie_text = os.environ.get("YOUTUBE_COOKIES", "").strip()
         if cookie_text:
@@ -342,23 +330,18 @@ def _build_ytdlp_opts(task_id: str, player_clients: list[str]) -> dict:
                 logger.info("[yt-dlp] Using cookies from YOUTUBE_COOKIES env var")
             except OSError as exc:
                 logger.warning(f"[yt-dlp] Could not write cookie file: {exc}")
-
     return opts
 
 
 def _provider_ytdlp(url: str, task_id: str) -> Path:
-    """Download via yt-dlp directly (may fail on HF datacenter IPs)."""
+    """Download via yt-dlp directly (usually fails on HF datacenter IPs)."""
     logger.info(f"[yt-dlp] Provider starting for task {task_id}")
-
     last_exc: Exception | None = None
 
     for attempt in range(1, _MAX_RETRIES + 1):
         clients = _PLAYER_CLIENTS[attempt - 1]
-        logger.info(f"[yt-dlp] Attempt {attempt}/{_MAX_RETRIES} "
-                    f"player_clients={clients}")
-
+        logger.info(f"[yt-dlp] Attempt {attempt}/{_MAX_RETRIES} player_clients={clients}")
         opts = _build_ytdlp_opts(task_id, clients)
-
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -368,63 +351,51 @@ def _provider_ytdlp(url: str, task_id: str) -> Path:
                     raise FileNotFoundError(f"Expected file missing: {dest}")
                 logger.info(f"[yt-dlp] Attempt {attempt} succeeded → {dest}")
                 return dest
-
         except Exception as exc:
             last_exc = exc
             err = str(exc)
             logger.warning(f"[yt-dlp] Attempt {attempt} failed: {err[:200]}")
-
             if any(kw in err.lower() for kw in _NON_RETRYABLE):
-                raise RuntimeError(
-                    "This video is unavailable, private, age-restricted, "
-                    "or geo-blocked."
-                ) from exc
-
+                raise RuntimeError("Video is unavailable, private, age-restricted, or geo-blocked.") from exc
             if attempt < _MAX_RETRIES:
                 wait = _BACKOFF_BASE ** attempt
                 logger.info(f"[yt-dlp] Retrying in {wait}s...")
                 time.sleep(wait)
 
-    raise RuntimeError(
-        f"yt-dlp failed after {_MAX_RETRIES} attempts. "
-        f"Last error: {str(last_exc)[:200]}"
-    )
+    raise RuntimeError(f"yt-dlp failed after {_MAX_RETRIES} attempts. Last: {str(last_exc)[:200]}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider registry
-# To add a new provider: implement _provider_<name>() and register it here.
 # ─────────────────────────────────────────────────────────────────────────────
 ProviderFn = Callable[[str, str], Path]
 
 PROVIDERS: dict[str, ProviderFn] = {
-    "rapidapi": _provider_rapidapi,
-    "ytdlp":    _provider_ytdlp,
-    # "cobalt":  _provider_cobalt,   ← future provider slot
+    "ytmp3":   _provider_ytmp3,   # ← RECOMMENDED: CDN URLs, no IP lock
+    "ytapi":   _provider_ytapi,   # ← NOT recommended on HF: IP-locked URLs
+    "ytdlp":   _provider_ytdlp,   # ← legacy: usually fails on HF datacenter IPs
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public entry point — called by routes.py, nothing else changes
+# Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 def download_youtube_video(url: str, task_id: str) -> Path:
     """
-    Download a YouTube video/audio to local storage and return the file path.
+    Download a YouTube audio file to local storage and return the file path.
 
-    Provider is controlled by YT_DOWNLOAD_PROVIDER env var:
-      "auto"     — try rapidapi first, fall back to ytdlp  (default)
-      "rapidapi" — RapidAPI only
-      "ytdlp"    — yt-dlp direct only
-
-    Raises HTTPException(400) with a clean user-facing message on all failures.
+    YT_DOWNLOAD_PROVIDER values:
+      "auto"   → try ytmp3 first, fall back to ytdlp  (default)
+      "ytmp3"  → youtube-mp36 API only (CDN URLs, recommended)
+      "ytapi"  → yt-api only (IP-locked, NOT recommended on HF)
+      "ytdlp"  → yt-dlp direct only (usually fails on HF)
     """
     _ensure_upload_dir()
 
     provider_name = os.environ.get("YT_DOWNLOAD_PROVIDER", "auto").strip().lower()
-    logger.info(f"[YT-DL] Starting download | provider={provider_name} "
-                f"| task={task_id} | url={url}")
+    logger.info(f"[YT-DL] Starting | provider={provider_name} | task={task_id} | url={url}")
 
-    # ── Single-provider mode ─────────────────────────────────────────────────
+    # Single provider
     if provider_name in PROVIDERS:
         try:
             return PROVIDERS[provider_name](url, task_id)
@@ -432,13 +403,11 @@ def download_youtube_video(url: str, task_id: str) -> Path:
             logger.error(f"[YT-DL] Provider '{provider_name}' failed: {exc}")
             raise HTTPException(status_code=400, detail=_FRIENDLY_ERROR)
 
-    # ── Auto mode: try providers in order until one succeeds ─────────────────
+    # Auto chain
     if provider_name == "auto":
-        chain = ["rapidapi", "ytdlp"]
-
-        # Skip rapidapi silently if the key isn't set yet
+        chain = ["ytmp3", "ytdlp"]
         if not os.environ.get("RAPIDAPI_KEY", "").strip():
-            logger.info("[YT-DL] RAPIDAPI_KEY not set — skipping rapidapi, using ytdlp")
+            logger.info("[YT-DL] RAPIDAPI_KEY not set — skipping ytmp3, using ytdlp only")
             chain = ["ytdlp"]
 
         for name in chain:
@@ -458,13 +427,6 @@ def download_youtube_video(url: str, task_id: str) -> Path:
         logger.error(f"[YT-DL] All providers exhausted for task {task_id}.")
         raise HTTPException(status_code=400, detail=_FRIENDLY_ERROR)
 
-    # ── Unknown provider ─────────────────────────────────────────────────────
+    # Unknown
     known = ", ".join(PROVIDERS.keys()) + ", auto"
-    logger.error(f"[YT-DL] Unknown YT_DOWNLOAD_PROVIDER='{provider_name}'. Valid: {known}")
-    raise HTTPException(
-        status_code=500,
-        detail=(
-            f"Server misconfiguration: unknown YT_DOWNLOAD_PROVIDER "
-            f"'{provider_name}'. Valid values: {known}"
-        )
-    )
+    raise HTTPException(status_code=500, detail=f"Unknown YT_DOWNLOAD_PROVIDER='{provider_name}'. Valid: {known}")
