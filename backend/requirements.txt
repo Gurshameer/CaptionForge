@@ -11,3 +11,4 @@ python-dotenv>=1.0.1
 kokoro>=0.9.4
 soundfile>=0.12.1
 chatterbox-tts>=0.1.0
+yt-dlp>=2023.12.30

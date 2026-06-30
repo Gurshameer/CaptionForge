@@ -1,0 +1,31 @@
+name: Check Hugging Face Deployment
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+
+jobs:
+  check-deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Deployment
+        # Wait a bit if this was triggered by a push to allow the deploy workflow to finish
+        if: github.event_name == 'push'
+        run: sleep 60
+
+      - name: Ping API Health Endpoint
+        run: |
+          echo "Checking Hugging Face Space availability..."
+          # The docs endpoint or a dedicated health endpoint
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://Gurshameer-CaptionForge-API.hf.space/docs || echo "Failed")
+          
+          if [ "$RESPONSE" = "200" ]; then
+            echo "✅ Hugging Face Space is up and running!"
+          else
+            echo "❌ Hugging Face Space returned status: $RESPONSE"
+            exit 1
+          fi
