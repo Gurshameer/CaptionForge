@@ -6,6 +6,9 @@ A complete, modern toolkit for video localization, sub-titling, and hyper-realis
   <img src="screenshots/hero.png" alt="CaptionForge Hero" width="800"/>
 </p>
 
+### 🌐 Live Application
+**Try it out here:** [https://gurshameer.github.io/CaptionForge/](https://gurshameer.github.io/CaptionForge/)
+
 ## ✨ Core Capabilities
 
 ### 🎬 Subtitle Generator

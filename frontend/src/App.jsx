@@ -134,7 +134,7 @@ export default function App() {
                   </div>
                   <h3>AI Voice Studio</h3>
                 </div>
-                <p>Generate realistic speech or clone any voice. Fine-tune expressiveness with D-Expression and CPQ Weight controls for broadcast-quality output.</p>
+                <p>Generate realistic speech or clone any voice. Fine-tune expressiveness with Exaggeration and CFG Weight controls for broadcast-quality output.</p>
                 <button onClick={() => goToTool('voice')} className="feature-btn feature-btn--sage">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v3"/></svg>
                   Generate Voice
@@ -156,11 +156,11 @@ export default function App() {
             <div className="ctrl-list">
               <div className={`ctrl-item ${activeControl === 0 ? 'active' : ''}`} onClick={() => setActiveControl(0)}>
                 <div className="ctrl-label">Control 1</div>
-                <div className="ctrl-title">D-Expression</div>
+                <div className="ctrl-title">Exaggeration</div>
               </div>
               <div className={`ctrl-item ${activeControl === 1 ? 'active' : ''}`} onClick={() => setActiveControl(1)}>
                 <div className="ctrl-label">Control 2</div>
-                <div className="ctrl-title">CPQ Weight</div>
+                <div className="ctrl-title">CFG Weight</div>
               </div>
               <div className={`ctrl-item ${activeControl === 2 ? 'active' : ''}`} onClick={() => setActiveControl(2)}>
                 <div className="ctrl-label">Control 3</div>
@@ -171,8 +171,8 @@ export default function App() {
               {activeControl === 0 && (
                 <div className="ctrl-panel-content">
                   <div className="ctrl-num">01</div>
-                  <h3>D-Expression</h3>
-                  <div className="ctrl-range">Tune 0.3 – 1.5, default 0.65</div>
+                  <h3>Exaggeration</h3>
+                  <div className="ctrl-range">Tune 0.0 – 1.0, default 0.5</div>
                   <ul>
                     <li>Controls how much emotion is expressed in synthesized speech.</li>
                     <li>Ranges from low (0.3, flat monotone — great for tutorials, news, or corporate) to high (1.5, highly dramatic for storytelling or emotion-heavy content).</li>
@@ -183,8 +183,8 @@ export default function App() {
               {activeControl === 1 && (
                 <div className="ctrl-panel-content">
                   <div className="ctrl-num">02</div>
-                  <h3>CPQ Weight</h3>
-                  <div className="ctrl-range">Tune 0.1 – 1.0, default 0.5</div>
+                  <h3>CFG Weight</h3>
+                  <div className="ctrl-range">Tune 0.0 – 1.0, default 0.5</div>
                   <ul>
                     <li>Controls clarity-to-personality ratio in the voice clone's output.</li>
                     <li>Lower values prioritize crisp, broadcast-clean articulation.</li>
@@ -199,7 +199,7 @@ export default function App() {
                   <div className="ctrl-range">Best-practice workflow</div>
                   <ul>
                     <li>Use a clean, noise-free reference sample of at least 10 seconds.</li>
-                    <li>Combine moderate D-Expression with balanced CPQ Weight for natural narration.</li>
+                    <li>Combine moderate Exaggeration with balanced CFG Weight for natural narration.</li>
                     <li>Preview a short clip before running the full script through the voice engine.</li>
                   </ul>
                 </div>
@@ -248,7 +248,7 @@ export default function App() {
             <ul className="specs-list">
               <li><span className="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12l5 5L20 7"/></svg></span><span>Realtime phonetic voices (English, multilingual)</span></li>
               <li><span className="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12l5 5L20 7"/></svg></span><span>State-of-the-art voice cloning via ChatTTSbox TTS</span></li>
-              <li><span className="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12l5 5L20 7"/></svg></span><span>D-Expression + CPQ Weight expressiveness controls</span></li>
+              <li><span className="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12l5 5L20 7"/></svg></span><span>Exaggeration + CFG Weight expressiveness controls</span></li>
               <li><span className="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12l5 5L20 7"/></svg></span><span>Upload .srt or .TXT script to auto-dub</span></li>
               <li><span className="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12l5 5L20 7"/></svg></span><span>Speaker Space for multi-speaker audio</span></li>
               <li><span className="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M5 12l5 5L20 7"/></svg></span><span>Max video size: 100MB per upload</span></li>
