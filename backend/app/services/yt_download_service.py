@@ -28,6 +28,16 @@ def download_youtube_video(url: str, task_id: str) -> Path:
         'nocheckcertificate': True,
     }
 
+    # If the user has provided YOUTUBE_COOKIES as an environment variable (e.g. via Hugging Face Secrets),
+    # write them to a temporary file and pass it to yt-dlp to bypass bot detection on datacenter IPs.
+    youtube_cookies = os.environ.get('YOUTUBE_COOKIES')
+    cookie_file_path = None
+    if youtube_cookies:
+        cookie_file_path = '/tmp/youtube_cookies.txt'
+        with open(cookie_file_path, 'w', encoding='utf-8') as f:
+            f.write(youtube_cookies)
+        ydl_opts['cookiefile'] = cookie_file_path
+
     try:
         logger.info(f"Downloading YouTube video {url} for task {task_id}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
