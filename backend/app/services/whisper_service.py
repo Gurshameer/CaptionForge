@@ -1,11 +1,32 @@
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from faster_whisper import WhisperModel
 from app.core.config import settings
 from app.core.logging import logger
 
-SUPPORTED_LANGUAGES = {"en", "ru", "ja", "de", "fr"}
+# All 12 supported transcription languages
+SUPPORTED_LANGUAGES = {
+    "en", "hi", "fr", "de", "es",
+    "it", "pt", "ru", "ja", "ko", "zh", "ar"
+}
+
+# Human-readable names for logging
+LANGUAGE_NAMES = {
+    "en": "English",
+    "hi": "Hindi",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "ar": "Arabic",
+}
+
 
 class WhisperService:
     _model: WhisperModel = None
@@ -34,43 +55,62 @@ class WhisperService:
                 raise RuntimeError(f"Whisper Model load failed: {e}") from e
         return cls._model
 
-    def transcribe(self, audio_path: Path) -> Tuple[List[Dict[str, Any]], str]:
+    def transcribe(
+        self,
+        audio_path: Path,
+        language_hint: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Transcribes the audio file, validates the language, and returns the segment list.
-        
+        Transcribes the audio file and returns segment list + detected language.
+
+        When language_hint is provided (and is not 'auto'), Whisper skips
+        auto-detection and transcribes directly in that language — this
+        improves accuracy for non-English content significantly.
+
         Args:
             audio_path (Path): Path to the input audio file (mono 16kHz wav).
-            
+            language_hint (Optional[str]): ISO 639-1 language code (e.g. 'hi',
+                'fr') or None/'auto' to use Whisper's auto-detection.
+
         Returns:
             Tuple[List[Dict[str, Any]], str]: A tuple of:
-                - List of segments (dictionaries containing 'start', 'end', and 'text').
-                - The detected language code (e.g. 'en').
-                
+                - List of segments (dicts containing 'start', 'end', 'text').
+                - The language code used for transcription.
+
         Raises:
-            ValueError: If the detected language is not in the supported set.
+            ValueError: If the resulting language is not in the supported set.
             FileNotFoundError: If the input audio file does not exist.
         """
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
         model = self.get_model()
-        logger.info(f"Starting ASR transcription on: {audio_path}")
+
+        # Determine whether to force a language or auto-detect
+        forced_language = None
+        if language_hint and language_hint.strip().lower() not in ("", "auto"):
+            forced_language = language_hint.strip().lower()
+            logger.info(f"Transcribing with forced language: '{forced_language}' ({LANGUAGE_NAMES.get(forced_language, forced_language)})")
+        else:
+            logger.info(f"Starting ASR transcription with auto language detection on: {audio_path}")
 
         # Run transcription
         # beam_size=5 is standard for a good speed/accuracy balance
         segments_generator, info = model.transcribe(
             str(audio_path),
             beam_size=5,
-            word_timestamps=False
+            word_timestamps=False,
+            language=forced_language  # None triggers auto-detection
         )
 
         detected_lang = info.language
-        logger.info(f"Language detection result: {detected_lang} (probability: {info.language_probability:.4f})")
+        logger.info(f"Language result: '{detected_lang}' (probability: {info.language_probability:.4f})")
 
         if detected_lang not in SUPPORTED_LANGUAGES:
-            logger.warning(f"Aborting task: Detected language '{detected_lang}' is not supported.")
+            logger.warning(f"Aborting task: Language '{detected_lang}' is not supported.")
             raise ValueError(
-                f"Unsupported language '{detected_lang}'. Allowed languages: {', '.join(sorted(SUPPORTED_LANGUAGES))}"
+                f"Unsupported language '{detected_lang}'. "
+                f"Supported languages: {', '.join(sorted(SUPPORTED_LANGUAGES))}"
             )
 
         # Retrieve and format segments
@@ -81,6 +121,6 @@ class WhisperService:
                 "end": segment.end,
                 "text": segment.text.strip()
             })
-            
-        logger.info(f"Transcription successfully completed. Generated {len(segments)} segments.")
+
+        logger.info(f"Transcription complete. Generated {len(segments)} segments in '{detected_lang}'.")
         return segments, detected_lang

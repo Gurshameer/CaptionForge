@@ -1,207 +1,87 @@
-<h1 align="center">
-  🎬 CaptionForge
-</h1>
+# CaptionForge & AI Voice Studio
 
-<h4 align="center">AI-powered subtitle generation — upload a video, get perfectly timed subtitles in seconds.</h4>
+A complete, modern toolkit for video localization, sub-titling, and hyper-realistic voice dubbing. Powered by Faster-Whisper for insanely fast transcriptions and ChatTTSbox for broadcast-quality voice cloning.
 
 <p align="center">
-  <a href="#key-features">Key Features</a> •
-  <a href="#processing-pipeline">Pipeline</a> •
-  <a href="#tech-stack">Tech Stack</a> •
-  <a href="#project-structure">Structure</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#deployment">Deployment</a> •
-  <a href="#license">License</a>
+  <img src="screenshots/hero.png" alt="CaptionForge Hero" width="800"/>
 </p>
 
----
+## ✨ Core Capabilities
 
-## Overview
+### 🎬 Subtitle Generator
+Automatically transcribe and perfectly sync subtitles for any video.
+- **Upload Video or YouTube URL:** Drag and drop your local files or simply paste a YouTube link.
+- **Powered by Faster-Whisper:** Fast and highly accurate transcriptions with automatic language detection.
+- **Interactive UI:** See live progress with a beautiful step-by-step pipeline tracker.
+- **Burn-in & Export:** Export transcripts as `.SRT` or `.VTT`, or automatically "burn in" the subtitles directly onto the video.
 
-CaptionForge is a full-stack web application that generates professional-quality subtitle files (`.srt`) from video uploads. It combines local machine learning for speech recognition with large language model intelligence for grammatical refinement — producing studio-quality subtitles at zero cost.
-
-## Key Features
-
-- 🌍 **Multi-Language Support** — Automatic language detection across English, Russian, Japanese, German, and French.
-- 🧠 **Dual-AI Pipeline** — Local ASR via Faster-Whisper + cloud LLM refinement via Gemma 3:12B.
-- ✨ **Smart Subtitle Enhancement** — Fixes spelling, grammar, punctuation, named entities, and ASR hallucinations while preserving speaker intent.
-- 📦 **Large File Handling** — Streams uploads up to 100MB using chunked transfer to avoid memory spikes.
-- 🎯 **Real-time Progress** — Live progress tracker with step-by-step pipeline visibility in the UI.
-- 📥 **One-Click Download** — Preview subtitles in-browser, copy to clipboard, or download the `.srt` file directly.
-
----
-
-## Processing Pipeline
-
-This is the core AI pipeline that powers CaptionForge:
-
-```
-┌──────────────┐     ┌──────────────────┐     ┌─────────────────────┐     ┌────────────────┐     ┌──────────────┐
-│  Video File  │────▶│  Audio Extractor  │────▶│  Speech Recognition │────▶│ LLM Refinement │────▶│  SRT Output  │
-│  (Upload)    │     │  (FFmpeg)         │     │  (Faster-Whisper)   │     │ (Gemma 3:12B)  │     │  (Download)  │
-└──────────────┘     └──────────────────┘     └─────────────────────┘     └────────────────┘     └──────────────┘
-```
-
-### Pipeline Stages
-
-| Stage | Tool | What It Does |
-|-------|------|-------------|
-| **1. Upload** | FastAPI | Validates file type/size, saves to disk with unique task ID |
-| **2. Audio Extraction** | FFmpeg | Strips audio track from video container → lossless `.wav` |
-| **3. Speech Recognition** | Faster-Whisper | Runs CTC-based ASR on audio, detects language, outputs timestamped segments |
-| **4. Transcript Enhancement** | Gemma 3:12B (OpenRouter) | Corrects grammar, spelling, punctuation, named entities using strict subtitle editor rules |
-| **5. SRT Compilation** | Python | Converts enhanced JSON segments into standard SubRip (`.srt`) format |
-
-### LLM Enhancement Rules
-
-The Gemma model follows a strict system prompt that enforces:
-- ✅ Fix spelling, grammar, capitalization, punctuation
-- ✅ Correct named entities (people, places, organizations)
-- ✅ Remove hallucinated/nonsensical ASR words (high confidence only)
-- ❌ Never summarize, paraphrase, translate, or censor
-- ❌ Never change timestamps, merge/split blocks, or reorder subtitles
-- ❌ If unsure about a correction → keep original text
+### 🎙️ AI Voice Studio
+Generate hyper-realistic speech or clone any voice directly from your browser.
+- **Voice Cloning:** Clone any voice using a short audio reference file (WAV, MP3, etc).
+- **Expressiveness Controls:** Fine-tune the tone and emotion of the cloned voice with `Exaggeration` and `CFG Weight` controls.
+- **Preset Voices:** Use high-quality studio voices tailored for different languages and accents.
+- **One-Click Dubbing:** Seamlessly send your generated video transcript directly to the AI Voice Studio for instant dubbing.
 
 ---
 
-## Tech Stack
+## 🚀 Quick Start
 
-| Layer | Technology |
-|-------|-----------|
-| **Frontend** | React 19, Vite, Vanilla CSS, Lucide Icons |
-| **Backend API** | Python 3.12, FastAPI, Uvicorn |
-| **Audio Processing** | FFmpeg |
-| **Speech Recognition** | Faster-Whisper (CTranslate2) |
-| **LLM Enhancement** | Gemma 3:12B via OpenRouter API |
+This project consists of a React/Vite frontend and a FastAPI (Python) backend.
 
----
-
-## Project Structure
-
-```
-CaptionForge/
-├── frontend/                    # React + Vite frontend
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Header.jsx       # App title & tagline
-│   │   │   ├── InfoBox.jsx      # Language badges & constraints
-│   │   │   ├── UploadZone.jsx   # Drag-and-drop file upload
-│   │   │   ├── ProgressTracker.jsx  # Real-time pipeline progress
-│   │   │   └── ResultsPanel.jsx # SRT preview, copy & download
-│   │   ├── App.jsx              # Main application layout
-│   │   └── index.css            # Complete design system
-│   ├── package.json
-│   └── vite.config.js
-│
-├── backend/                     # FastAPI backend
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── routes.py        # API endpoints (upload, status, download)
-│   │   │   └── schemas.py       # Pydantic request/response models
-│   │   ├── core/
-│   │   │   ├── config.py        # Application settings & env vars
-│   │   │   └── logging.py       # Structured logging configuration
-│   │   ├── services/
-│   │   │   ├── audio_extractor.py   # FFmpeg audio extraction
-│   │   │   ├── whisper_service.py   # Faster-Whisper ASR
-│   │   │   ├── gemma_service.py     # Gemma LLM transcript enhancement
-│   │   │   └── subtitle_service.py  # SRT file compilation
-│   │   └── utils/
-│   │       └── file_utils.py    # File validation & cleanup
-│   ├── main.py                  # FastAPI application entry point
-│   ├── requirements.txt         # Python dependencies
-│   └── .env.example             # Environment variable template
-│
-├── run.bat                      # One-click startup (frontend + backend)
-├── .gitignore
-└── README.md
-```
-
----
-
-## Installation
-
-### Prerequisites
-
-| Requirement | Version |
-|------------|---------|
-| Python | 3.12+ |
-| Node.js | 18+ |
-| FFmpeg | Any recent version, must be in system `PATH` |
-
-### 1. Clone the repository
-```bash
-git clone https://github.com/<your-username>/CaptionForge.git
-cd CaptionForge
-```
+### 1. Prerequisites
+- Node.js 18+ (for frontend)
+- Python 3.10+ (for backend)
+- Git
 
 ### 2. Backend Setup
 ```bash
-# Create virtual environment
+cd backend
 python -m venv .venv
+# Activate the virtual environment
+# Windows:
+.venv\Scripts\activate
+# Mac/Linux:
+source .venv/bin/activate
 
-# Activate it
-.venv\Scripts\activate        # Windows
-source .venv/bin/activate      # Mac/Linux
-
-# Install dependencies
-pip install -r backend/requirements.txt
+pip install -r requirements.txt
+python main.py
 ```
+*The backend API will run at `http://127.0.0.1:8000`*
 
-### 3. Configure Environment
-Create a `.env` file inside the `backend/` directory:
-```env
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-```
-> Get a free API key at [openrouter.ai](https://openrouter.ai)
-
-### 4. Frontend Setup
+### 3. Frontend Setup
 ```bash
 cd frontend
 npm install
-cd ..
+npm run dev
 ```
+*The frontend will run at `http://localhost:5173`*
 
-### 5. Run the Application
+### 4. Or use the runner script (Windows only)
 ```bash
-# Windows — starts both servers with one command:
 .\run.bat
 ```
-
-| Service | URL |
-|---------|-----|
-| Frontend | `http://localhost:5173` |
-| Backend API Docs | `http://localhost:8000/docs` |
+This will automatically start both the backend and frontend servers in separate windows.
 
 ---
 
-## Deployment
+## 🛠️ Technology Stack
 
-CaptionForge is deployed using two free-tier services:
+**Frontend:**
+- React 19
+- Vite
+- Lucide React (Icons)
+- Vanilla CSS with CSS Variables for a dynamic, modern Glassmorphism theme
 
-| Component | Platform | Why |
-|-----------|----------|-----|
-| **Frontend** | GitHub Pages | Free static site hosting, perfect for React builds |
-| **Backend** | Hugging Face Spaces | Free Docker hosting with 16GB RAM — ideal for ML workloads like Faster-Whisper |
-
-### Frontend → GitHub Pages
-The React app is built into static files and served via GitHub Pages at no cost.
-
-### Backend → Hugging Face Spaces
-The FastAPI backend is containerized with Docker (including FFmpeg and Faster-Whisper) and deployed to a Hugging Face Docker Space, which provides the compute resources needed for real-time speech recognition.
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/v1/subtitles/upload` | Upload a video file to start processing |
-| `GET` | `/api/v1/subtitles/status/{task_id}` | Poll the current processing status |
-| `GET` | `/api/v1/subtitles/download/{task_id}` | Download the generated `.srt` file |
+**Backend:**
+- Python & FastAPI
+- Faster-Whisper (Audio Transcription)
+- ChatTTSbox (Voice Cloning)
+- FFmpeg (Video processing & Subtitle burn-in)
 
 ---
 
-## License
+## 🎨 Design Philosophy
+The application interface is built with a premium, modern aesthetic utilizing a custom color palette of Creams, Rusts, and Sage Greens. It features smooth micro-animations, glassmorphism overlays on scroll, and a clean, step-by-step progress UI that provides users with confidence during long-running background tasks.
 
-MIT
+## 📄 License
+MIT License

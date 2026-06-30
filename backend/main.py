@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.utils.file_utils import initialize_directories
 from app.api.routes import router as api_router
+from app.api.voice_routes import router as voice_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,6 +34,7 @@ app.add_middleware(
 
 # Register subtitle router
 app.include_router(api_router)
+app.include_router(voice_router)
 
 @app.get("/")
 def read_root():

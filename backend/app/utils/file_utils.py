@@ -11,6 +11,8 @@ def initialize_directories():
     settings.upload_path.mkdir(parents=True, exist_ok=True)
     settings.output_path.mkdir(parents=True, exist_ok=True)
     settings.log_path.mkdir(parents=True, exist_ok=True)
+    settings.audio_output_path.mkdir(parents=True, exist_ok=True)
+    (settings.base_dir / settings.VOICE_REFERENCE_DIR).mkdir(parents=True, exist_ok=True)
     logger.info("Application storage directories verified/created.")
 
 def validate_uploaded_file(file: UploadFile):
@@ -73,9 +75,10 @@ def save_upload_file(file: UploadFile, task_id: str) -> Path:
 def cleanup_task_files(task_id: str):
     """Clean up uploaded video and temporary files associated with a task_id."""
     try:
-        # Clean up files matching task_id in uploads folder (e.g. video and extracted audio wav)
-        for file_path in settings.upload_path.glob(f"{task_id}.*"):
-            file_path.unlink(missing_ok=True)
-            logger.info(f"Cleaned up temporary upload file: {file_path}")
+        # Clean up only the extracted audio wav file to preserve the video for potential burn-in
+        wav_path = settings.upload_path / f"{task_id}.wav"
+        if wav_path.exists():
+            wav_path.unlink(missing_ok=True)
+            logger.info(f"Cleaned up temporary audio file: {wav_path}")
     except Exception as e:
         logger.error(f"Failed to clean up uploads for task {task_id}: {e}")

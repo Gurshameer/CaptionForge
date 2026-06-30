@@ -1,101 +1,151 @@
 import { useState, useEffect } from 'react';
-import { Download, Copy, Check, FileCode, AlertCircle, RefreshCw } from 'lucide-react';
+import { Download, Copy, Check, FileCode2, AlertCircle, Loader2, Flame, Play, Video, RefreshCw } from 'lucide-react';
 import { apiUrl } from '../api';
 
-export default function ResultsPanel({ taskId, downloadUrl, onReset }) {
-  const [srtContent, setSrtContent] = useState('');
+function stripSrt(content) {
+  if (!content) return '';
+  return content.split('\n')
+    .filter(l => !/^\d+$/.test(l.trim()))
+    .filter(l => !/-->/.test(l))
+    .filter(l => l.trim() !== '')
+    .join(' ');
+}
+
+function highlightSrt(content) {
+  return content
+    .replace(/^(\d+)$/gm, '<span class="idx">$1</span>')
+    .replace(/(\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3})/g, '<span class="ts">$1</span>');
+}
+
+export default function ResultsPanel({ taskId, downloadUrl, detectedLanguage, onSrtLoaded, onUseForVoice, onReset }) {
+  const [srt, setSrt] = useState('');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [fetchError, setFetchError] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [burning, setBurning] = useState(false);
+  const [burnUrl, setBurnUrl] = useState(null);
+  const [burnError, setBurnError] = useState(null);
 
   useEffect(() => {
-    const fetchSrt = async () => {
-      if (!downloadUrl) return;
-      try {
-        setLoading(true);
-        const response = await fetch(apiUrl(downloadUrl));
-        if (!response.ok) {
-          throw new Error('Failed to retrieve SRT content.');
-        }
-        const text = await response.text();
-        setSrtContent(text);
-        setError(null);
-      } catch (err) {
-        console.error('Error fetching SRT:', err);
-        setError('Could not load preview. You can still download the file directly.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchSrt();
+    if (!downloadUrl) return;
+    setLoading(true);
+    fetch(apiUrl(downloadUrl))
+      .then(r => { if (!r.ok) throw new Error('Failed'); return r.text(); })
+      .then(text => { setSrt(text); onSrtLoaded?.(stripSrt(text)); setFetchError(null); })
+      .catch(() => setFetchError('Could not load preview.'))
+      .finally(() => setLoading(false));
   }, [downloadUrl]);
 
   const handleCopy = async () => {
-    if (!srtContent) return;
+    await navigator.clipboard.writeText(srt).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleBurn = async () => {
+    setBurning(true);
+    setBurnError(null);
     try {
-      await navigator.clipboard.writeText(srtContent);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy text: ', err);
+      const res = await fetch(apiUrl(`/api/v1/subtitles/burn/${taskId}`), { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Burn failed');
+      setBurnUrl(data.download_url);
+    } catch (e) {
+      setBurnError(e.message);
+    } finally {
+      setBurning(false);
     }
   };
 
   return (
-    <div className="card animate-scale-up">
-      <div className="card__title" style={{ display: 'flex', justifyContent: 'space-between', borderBottom: 'none' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <FileCode className="card__title-icon" size={20} />
-          <div>
-            <div style={{ fontSize: '1.1rem', fontWeight: '700' }}>Generated Subtitles</div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Ready for download and preview</div>
-          </div>
+    <div className="card card--active animate-up">
+      <div className="card-header">
+        <div className="card-icon card-icon--green">
+          <FileCode2 size={16} />
         </div>
-
-        <div className="action-buttons">
-          <button 
-            onClick={handleCopy} 
-            className={`btn btn-secondary btn-icon-only ${copied ? 'success' : ''}`}
-            disabled={loading || !!error || !srtContent}
-            title="Copy to clipboard"
-          >
-            {copied ? <Check size={18} /> : <Copy size={18} />}
-          </button>
-          
-          <a 
-            href={apiUrl(downloadUrl)} 
-            download
-            className="btn btn-primary btn-icon"
-          >
-            <Download size={18} />
-            <span>Download .SRT</span>
-          </a>
+        <div style={{ flex: 1 }}>
+          <div className="card-title">Subtitles Ready</div>
+          <div className="card-subtitle">
+            {detectedLanguage && <>Detected: <strong style={{ color: '#f1f5f9' }}>{detectedLanguage.toUpperCase()}</strong> · </>}
+            Export, burn-in, or use for voice dubbing
+          </div>
         </div>
       </div>
 
-      <div className="preview-container">
+      {/* Action buttons */}
+      <div className="result-actions">
+        <button onClick={handleCopy} className={`btn btn-ghost btn-icon ${copied ? 'btn-success' : ''}`} disabled={!srt} title="Copy SRT">
+          {copied ? <Check size={15} /> : <Copy size={15} />}
+        </button>
+        <a href={apiUrl(downloadUrl)} download className="btn btn-ghost btn-sm">
+          <Download size={14} /> .SRT
+        </a>
+        <a href={apiUrl(`/api/v1/subtitles/download-vtt/${taskId}`)} download className="btn btn-ghost btn-sm">
+          <Download size={14} /> .VTT
+        </a>
+        <button
+          onClick={handleBurn}
+          className="btn btn-ghost btn-sm"
+          style={{ borderColor: burnUrl ? 'var(--green-glow)' : undefined, color: burnUrl ? '#6ee7b7' : undefined }}
+          disabled={burning || !!burnUrl || !srt}
+        >
+          {burning ? <><Loader2 size={14} className="spinner" /> Burning...</> : <><Flame size={14} /> Burn-in</>}
+        </button>
+      </div>
+
+      {/* SRT Preview */}
+      <div className="subtitle-preview">
         {loading ? (
-          <div className="preview-placeholder loading">
-            <RefreshCw className="spinner" size={32} />
-            <p>Loading subtitle preview...</p>
+          <div className="preview-empty">
+            <Loader2 size={24} className="spinner" style={{ color: 'var(--indigo)' }} />
+            <span style={{ fontSize: '0.8rem' }}>Loading preview...</span>
           </div>
-        ) : error ? (
-          <div className="preview-placeholder error">
-            <AlertCircle size={32} className="error-icon" />
-            <p>{error}</p>
+        ) : fetchError ? (
+          <div className="preview-empty">
+            <AlertCircle size={20} style={{ color: 'var(--red)' }} />
+            <span style={{ fontSize: '0.8rem', color: '#fca5a5' }}>{fetchError}</span>
           </div>
         ) : (
-          <pre className="srt-preview">
-            <code>{srtContent}</code>
-          </pre>
+          <pre dangerouslySetInnerHTML={{ __html: highlightSrt(srt) }} />
         )}
       </div>
 
-      <div className="results-footer">
-        <p className="credits">Enhanced via Gemma-3 12B &amp; Faster-Whisper</p>
-        <button onClick={onReset} className="btn btn-text">
-          Upload Another Video
+      {burnError && (
+        <div className="error-block" style={{ marginTop: 12 }}>
+          <AlertCircle size={14} className="error-block__icon" />
+          <div className="error-block__msg">{burnError}</div>
+        </div>
+      )}
+
+      {/* Burned video */}
+      {burnUrl && (
+        <div className="burn-result">
+          <div className="burn-result-header">
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.875rem', fontWeight: 600 }}>
+              <Video size={16} style={{ color: '#6ee7b7' }} /> Subtitled Video
+            </span>
+            <a href={apiUrl(burnUrl)} download className="btn btn-ghost btn-sm">
+              <Download size={14} /> Download
+            </a>
+          </div>
+          <div className="video-wrapper">
+            <video controls src={apiUrl(burnUrl)} />
+          </div>
+        </div>
+      )}
+
+      {/* Footer actions */}
+      <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <button
+          className="btn btn-primary"
+          style={{ flex: 1 }}
+          onClick={() => onUseForVoice?.(stripSrt(srt))}
+          disabled={!srt}
+        >
+          <Play size={15} /> Use for Voice Dubbing
+        </button>
+        <button onClick={onReset} className="btn btn-ghost" title="New video">
+          <RefreshCw size={15} />
         </button>
       </div>
     </div>

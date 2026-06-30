@@ -7,9 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
     PORT=7860
 
-# Install system dependencies (ffmpeg is required for audio extraction)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    libsndfile1 \
+    espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user (Hugging Face Spaces requirement)

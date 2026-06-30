@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     LOG_DIR: str = "logs"
     MAX_UPLOAD_SIZE: int = 104857600  # 100 MB
     
+    # Voice Generation paths & settings
+    AUDIO_OUTPUT_DIR: str = "generated_audio"
+    VOICE_REFERENCE_DIR: str = "voice_references"
+    KOKORO_DEFAULT_VOICE: str = "af_heart"
+    VOICE_TEXT_MAX_CHARS: int = 1500
+    
     # Faster-Whisper ASR
     WHISPER_MODEL: str = "base"
     WHISPER_DEVICE: str = "cpu"
@@ -44,6 +50,17 @@ class Settings(BaseSettings):
         if p.is_absolute():
             return p
         return Path(__file__).resolve().parent.parent.parent / p
+
+    @property
+    def audio_output_path(self) -> Path:
+        p = Path(self.AUDIO_OUTPUT_DIR)
+        if p.is_absolute():
+            return p
+        return Path(__file__).resolve().parent.parent.parent / p
+        
+    @property
+    def base_dir(self) -> Path:
+        return Path(__file__).resolve().parent.parent.parent
 
     model_config = SettingsConfigDict(
         env_file=".env",
