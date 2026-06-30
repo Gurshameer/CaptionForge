@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsndfile1 \
     espeak-ng \
+    git \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user (Hugging Face Spaces requirement)

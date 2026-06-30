@@ -17,14 +17,12 @@ def download_youtube_video(url: str, task_id: str) -> Path:
     outtmpl = str(settings.upload_path / f"{task_id}.%(ext)s")
     
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestaudio/best',
         'outtmpl': outtmpl,
         'noplaylist': True,
         'quiet': False,
         'no_warnings': True,
-        'extractor_args': {'youtube': {'player_client': ['tv', 'web']}},
         'legacyserverconnect': True,
-        'source_address': '0.0.0.0',
         'nocheckcertificate': True,
     }
 
