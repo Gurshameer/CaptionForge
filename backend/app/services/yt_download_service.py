@@ -22,8 +22,9 @@ def download_youtube_video(url: str, task_id: str) -> Path:
         'noplaylist': True,
         'quiet': False,
         'no_warnings': True,
-        'extractor_args': {'youtube': {'player_client': ['android']}},
+        'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
         'legacyserverconnect': True,
+        'source_address': '0.0.0.0',
     }
 
     try:
