@@ -96,10 +96,11 @@ header.scrolled {
   gap: 14px;
 }
 
-.brand-logo-svg {
-  width: 54px;
-  height: 30px;
+.brand-logo-img {
+  height: 36px;
+  width: auto;
   flex-shrink: 0;
+  object-fit: contain;
 }
 
 .brand-name {
