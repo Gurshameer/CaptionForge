@@ -1,4 +1,5 @@
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 import uuid
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ def download_youtube_video(url: str, task_id: str) -> Path:
         'noplaylist': True,
         'quiet': False,
         'no_warnings': True,
+        'impersonate': ImpersonateTarget.from_str('chrome'),
         'legacyserverconnect': True,
         'nocheckcertificate': True,
     }

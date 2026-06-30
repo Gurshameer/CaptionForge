@@ -12,5 +12,6 @@ kokoro>=0.9.4
 soundfile>=0.12.1
 chatterbox-tts>=0.1.0
 yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@master
+curl_cffi
 certifi
 requests
