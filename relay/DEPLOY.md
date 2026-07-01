@@ -1,162 +1,89 @@
-# Relay Deployment Guide — Fly.io
+# Relay Deployment Guide — Render.com
+
+We use a tiny Render web service to act as a YouTube proxy. Since it's incredibly lightweight and fast, Render's free tier sleep/wake cycle (spin-down) is not a problem here like it was for the main app.
 
 ## Prerequisites
 
-- `flyctl` installed ([install guide](https://fly.io/docs/hands-on/install-flyctl/))
-- A Fly.io account (free tier is enough)
-- Run all commands **from the `relay/` directory**
+- A free account on [Render.com](https://render.com)
+- Your code must be pushed to GitHub
 
 ---
 
-## Step 1 — Test the relay locally FIRST
+## Step 1 — Push your changes to GitHub
 
-Before deploying anywhere, verify yt-dlp works on your machine:
+Since you've switched from Fly.io to Render, we've updated the `render.yaml` at the root of the project to point to the `relay` folder.
 
 ```bash
-# From relay/ directory
-pip install -r requirements.txt
-RELAY_SECRET_KEY=testsecret uvicorn main:app --port 8080 --reload
+git add render.yaml relay/requirements.txt relay/main.py relay/DEPLOY.md relay/fly.toml relay/Dockerfile
+git commit -m "chore: pivot relay deployment to Render.com"
+git push origin main
 ```
 
-In another terminal:
-```bash
-curl -X POST http://localhost:8080/extract \
-  -H "X-Relay-Key: testsecret" \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://www.youtube.com/watch?v=9PXluC2FMD0"}' \
-  --output test_local.mp3 --progress-bar
-
-# Expected: test_local.mp3 appears, non-zero size
-```
+*(Note: We can delete `fly.toml` and `Dockerfile` if we want, as Render uses native Python environments).*
 
 ---
 
-## Step 2 — Deploy to Fly.io
+## Step 2 — Deploy on Render
 
-```bash
-# 1. Authenticate
-fly auth login
-
-# 2. Create the app (only needed once — skips interactive prompt)
-fly launch \
-  --name captionforge-relay \
-  --region iad \
-  --no-deploy \
-  --copy-config
-
-# 3. Set the secret key (generated securely — use your own value)
-#    This must match RELAY_SECRET_KEY you set on HF Spaces
-fly secrets set RELAY_SECRET_KEY="$(python -c "import secrets; print(secrets.token_hex(32))")"
-
-# 4. Deploy
-fly deploy
-
-# 5. Check it's live
-fly status
-fly logs
-```
-
-> The app name `captionforge-relay` in `fly.toml` means your URL will be:
-> `https://captionforge-relay.fly.dev`
+1. Go to the [Render Dashboard](https://dashboard.render.com).
+2. Click **New +** → **Blueprint**.
+3. Connect your repository (`Gurshameer/CaptionForge`).
+4. Render will automatically detect the `render.yaml` file.
+5. Click **Apply**.
 
 ---
 
-## Step 3 — Test the deployed relay (BEFORE touching HF Spaces)
+## Step 3 — Set the Secret Key
+
+While it's deploying:
+
+1. Click on the new **captionforge-relay** service in your Render dashboard.
+2. Go to **Environment** (left sidebar).
+3. Click **Add Environment Variable**.
+4. Key: `RELAY_SECRET_KEY`
+5. Value: Generate a random string. (For example, run `python -c "import secrets; print(secrets.token_hex(32))"` in your terminal and paste the result).
+6. Click **Save Changes**. (This will trigger a new deploy).
+
+---
+
+## Step 4 — Test the deployed relay (BEFORE touching HF Spaces)
+
+Once the service is completely deployed and live, grab the URL from the top of the Render dashboard (e.g., `https://captionforge-relay.onrender.com`).
+
+Run this in your terminal:
 
 ```bash
-# Replace YOUR_RELAY_SECRET_KEY with the value you set in Step 2
-curl -X POST https://captionforge-relay.fly.dev/extract \
+# Replace YOUR_RELAY_URL and YOUR_RELAY_SECRET_KEY
+curl -X POST https://YOUR_RELAY_URL/extract \
   -H "X-Relay-Key: YOUR_RELAY_SECRET_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://www.youtube.com/watch?v=9PXluC2FMD0"}' \
+  -d "{\"url\":\"https://www.youtube.com/watch?v=9PXluC2FMD0\"}" \
   --output test.mp3 \
   --progress-bar
 
 # ✅ SUCCESS: test.mp3 has non-zero size and plays
-# ❌ FAIL: If you get SSL: UNEXPECTED_EOF, Fly.io's IP is also blocked.
-#           Try a different region: fly regions add lhr && fly deploy
-```
-
-Also test the health endpoint:
-```bash
-curl https://captionforge-relay.fly.dev/health
-# Expected: {"status":"ok"}
 ```
 
 ---
 
-## Step 4 — Set env vars on HF Spaces
+## Step 5 — Point HF Spaces to the Relay
 
 Go to: `https://huggingface.co/spaces/Gurshameer/CaptionForge-API` → **Settings** → **Variables**
 
-Add these secrets:
+Add or update these secrets:
 
 | Variable | Value |
 |---|---|
-| `RELAY_URL` | `https://captionforge-relay.fly.dev` |
-| `RELAY_SECRET_KEY` | *(same value you set with `fly secrets set`)* |
+| `RELAY_URL` | `https://captionforge-relay.onrender.com` (Your Render URL) |
+| `RELAY_SECRET_KEY` | *(same value you set in Step 3)* |
 | `OPENROUTER_API_KEY` | *(your OpenRouter API key)* |
 
 ---
 
-## Step 5 — Restart the HF Space
+## Step 6 — Restart the HF Space
 
-After adding env vars, trigger a restart:
+After adding the environment variables, trigger a restart:
 
 **Option A (recommended):** Push a trivial commit to the `backend/` folder — GitHub Actions will redeploy to HF Spaces automatically.
 
 **Option B (manual):** On HF Spaces → Settings → scroll to **"Factory reboot"** and click it.
-
----
-
-## Useful Fly.io commands
-
-```bash
-# View live logs
-fly logs --app captionforge-relay
-
-# Open a shell inside the machine
-fly ssh console --app captionforge-relay
-
-# Scale up if needed (e.g., for testing)
-fly scale memory 512 --app captionforge-relay
-
-# Update the secret key
-fly secrets set RELAY_SECRET_KEY="new-secret-here" --app captionforge-relay
-
-# Redeploy (after code changes)
-fly deploy
-
-# Destroy the app
-fly apps destroy captionforge-relay
-```
-
----
-
-## Log patterns to look for
-
-### Successful YouTube download via relay:
-```
-[extract] Received request | url=https://youtube.com/watch?v=...
-[extract] Running yt-dlp for: https://...
-[extract] Download complete: audio.mp3 (4821 KB) — streaming back
-[extract] Sending response: tmpXXXXXX.mp3
-[cleanup] Deleted temp file: tmpXXXXXX.mp3
-```
-
-### Auth failure (wrong RELAY_SECRET_KEY):
-```
-[auth] Invalid X-Relay-Key: 'wrong-key'
-→ HTTP 401 returned to caller
-```
-
-### yt-dlp blocked (Fly.io IP also blocked by YouTube):
-```
-[extract] yt-dlp failed (rc=1): ERROR: unable to download webpage: ... SSL: UNEXPECTED_EOF
-→ HTTP 502 returned to caller
-```
-If you see this, try a different Fly.io region:
-```bash
-fly regions add lhr    # London
-fly deploy
-```
