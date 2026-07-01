@@ -34,7 +34,7 @@ jobs:
           
           echo "🚀 Pushing backend to Hugging Face Spaces..."
           cd backend
-          huggingface-cli upload Gurshameer/CaptionForge-API . . --repo-type space --token $HF_TOKEN
+          hf upload Gurshameer/CaptionForge-API . . --repo-type space --token $HF_TOKEN
           echo "✅ Successfully pushed to Hugging Face Spaces!"
 
       # ---------------------------------------------------------
