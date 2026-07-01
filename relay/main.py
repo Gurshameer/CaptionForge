@@ -8,6 +8,15 @@ Endpoints:
   POST /extract  → download YouTube audio, stream it back
 
 Auth: X-Relay-Key header must match RELAY_SECRET_KEY env var.
+
+Cookie support (to bypass YouTube bot-detection on datacenter IPs):
+  Set one of these environment variables in Render → Environment:
+    YOUTUBE_COOKIES     Raw Netscape-format cookie text (paste the full
+                        contents of a cookies.txt exported from your browser).
+    YTDLP_COOKIES_FILE  Absolute path to a Netscape cookies file already
+                        present on the filesystem (advanced / Docker only).
+  Only a throwaway Google account should be used. Cookies expire; you will
+  need to re-export and update the secret every few weeks.
 """
 
 from __future__ import annotations
@@ -121,6 +130,30 @@ def extract(
     with tempfile.TemporaryDirectory() as tmpdir:
         output_template = str(Path(tmpdir) / "audio.%(ext)s")
 
+        # ── Cookie support ────────────────────────────────────────────────────
+        # Prefer a pre-existing file path, fall back to raw cookie text written
+        # to a temp file.  The cookie file is deleted after yt-dlp exits.
+        cookie_args: list[str] = []
+        _tmp_cookie_path: Path | None = None
+
+        cookie_file_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+        if cookie_file_path and Path(cookie_file_path).is_file():
+            cookie_args = ["--cookies", cookie_file_path]
+            logger.info(f"[extract] Using cookie file: {cookie_file_path}")
+        else:
+            cookie_text = os.environ.get("YOUTUBE_COOKIES", "").strip()
+            if cookie_text:
+                _tmp_cookie_path = Path(tempfile.mktemp(suffix="_yt_cookies.txt"))
+                try:
+                    _tmp_cookie_path.write_text(cookie_text, encoding="utf-8")
+                    cookie_args = ["--cookies", str(_tmp_cookie_path)]
+                    logger.info("[extract] Using cookies from YOUTUBE_COOKIES env var")
+                except OSError as exc:
+                    logger.warning(f"[extract] Could not write temp cookie file: {exc} — proceeding without cookies")
+            else:
+                logger.debug("[extract] No cookies configured — proceeding without authentication")
+        # ─────────────────────────────────────────────────────────────────────
+
         cmd = [
             "yt-dlp",
             "--no-playlist",
@@ -132,6 +165,7 @@ def extract(
             "--no-warnings",
             "--force-ipv4",
             "--extractor-args", "youtube:player_client=android,web",
+            *cookie_args,
             url,
         ]
 
@@ -151,14 +185,27 @@ def extract(
                 detail="yt-dlp timed out while downloading the video."
             )
 
+        # Clean up temp cookie file regardless of success/failure
+        if _tmp_cookie_path and _tmp_cookie_path.exists():
+            try:
+                _tmp_cookie_path.unlink()
+                logger.debug(f"[extract] Deleted temp cookie file: {_tmp_cookie_path.name}")
+            except OSError as exc:
+                logger.warning(f"[extract] Could not delete temp cookie file: {exc}")
+
         if result.returncode != 0:
             stderr_snippet = result.stderr[-500:] if result.stderr else "(no stderr)"
             logger.error(f"[extract] yt-dlp failed (rc={result.returncode}): {stderr_snippet}")
 
             # Detect common non-retryable errors and give a helpful message
             lower = stderr_snippet.lower()
+            if "sign in" in lower or "bot" in lower:
+                raise HTTPException(
+                    status_code=422,
+                    detail="YouTube requires authentication. Cookies may be missing or expired."
+                )
             if any(kw in lower for kw in ("private video", "video unavailable", "age-restricted",
-                                           "geo-restricted", "members only", "sign in")):
+                                           "geo-restricted", "members only")):
                 raise HTTPException(
                     status_code=422,
                     detail="Video is unavailable, private, age-restricted, or geo-blocked."
