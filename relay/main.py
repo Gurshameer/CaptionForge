@@ -1,7 +1,7 @@
 """
 relay/main.py
 =============
-CaptionForge Fly.io Relay — minimal YouTube audio download service.
+CaptionForge Relay — YouTube audio download service.
 
 Endpoints:
   GET  /health   → liveness check
@@ -9,24 +9,28 @@ Endpoints:
 
 Auth: X-Relay-Key header must match RELAY_SECRET_KEY env var.
 
-Cookie support (to bypass YouTube bot-detection on datacenter IPs):
-  Set one of these environment variables in Render → Environment:
-    YOUTUBE_COOKIES     Raw Netscape-format cookie text (paste the full
-                        contents of a cookies.txt exported from your browser).
-    YTDLP_COOKIES_FILE  Absolute path to a Netscape cookies file already
-                        present on the filesystem (advanced / Docker only).
-  Only a throwaway Google account should be used. Cookies expire; you will
-  need to re-export and update the secret every few weeks.
+Download strategies (tried in order):
+─────────────────────────────────────
+  1. RapidAPI — youtube-mp36.p.rapidapi.com   [PRIMARY — recommended]
+     Set RAPIDAPI_KEY in Render → Environment.
+     Free tier: ~500 requests/day. No bot issues.
+
+  2. yt-dlp fallback                          [FALLBACK — often blocked on Render]
+     Used automatically if RAPIDAPI_KEY is not set.
+     Supports YOUTUBE_COOKIES / YTDLP_COOKIES_FILE env vars.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
+import requests as http_requests
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -51,8 +55,8 @@ logger = logging.getLogger("relay")
 # ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="CaptionForge Relay",
-    description="Minimal YouTube audio download relay for CaptionForge.",
-    version="1.0.0",
+    description="YouTube audio download relay for CaptionForge.",
+    version="2.0.0",
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +73,6 @@ def _verify_key(provided: str | None) -> None:
     """Raise 401 if the X-Relay-Key header is missing or doesn't match RELAY_SECRET_KEY."""
     expected = os.environ.get("RELAY_SECRET_KEY", "").strip()
     if not expected:
-        # No secret configured — refuse all requests to avoid an open relay
         logger.warning("[auth] RELAY_SECRET_KEY not set — rejecting all requests")
         raise HTTPException(status_code=401, detail="Relay is not configured (no secret set).")
     if not provided or provided.strip() != expected:
@@ -78,19 +81,225 @@ def _verify_key(provided: str | None) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# URL validation
+# URL helpers
 # ─────────────────────────────────────────────────────────────────────────────
 _YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "www.youtube.com", "m.youtube.com")
 
+
 def _validate_youtube_url(url: str) -> None:
-    """Reject non-YouTube URLs early so yt-dlp doesn't make unexpected outbound calls."""
-    from urllib.parse import urlparse
+    """Reject non-YouTube URLs early."""
     try:
         parsed = urlparse(url.strip())
         if parsed.netloc not in _YOUTUBE_DOMAINS:
-            raise ValueError(f"Not a YouTube URL: {url!r}")
+            raise ValueError
     except Exception:
         raise HTTPException(status_code=400, detail=f"Invalid or non-YouTube URL: {url!r}")
+
+
+def _extract_video_id(url: str) -> str:
+    """
+    Extract the YouTube video ID from a URL.
+    Handles:
+      https://www.youtube.com/watch?v=VIDEO_ID
+      https://youtu.be/VIDEO_ID
+      https://www.youtube.com/watch?v=VIDEO_ID&t=2s
+    """
+    parsed = urlparse(url.strip())
+
+    # youtu.be/VIDEO_ID
+    if parsed.netloc in ("youtu.be",):
+        vid = parsed.path.lstrip("/").split("/")[0]
+        if vid:
+            return vid
+
+    # youtube.com/watch?v=VIDEO_ID
+    qs = parse_qs(parsed.query)
+    if "v" in qs and qs["v"]:
+        return qs["v"][0]
+
+    # Fallback: look for 11-char alphanumeric ID anywhere in the URL
+    match = re.search(r"[?&/]([a-zA-Z0-9_-]{11})(?:[?&]|$)", url)
+    if match:
+        return match.group(1)
+
+    raise HTTPException(status_code=400, detail=f"Could not extract video ID from URL: {url!r}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Strategy A — RapidAPI youtube-mp36  (PRIMARY)
+# ─────────────────────────────────────────────────────────────────────────────
+_RAPIDAPI_HOST = "youtube-mp36.p.rapidapi.com"
+_RAPIDAPI_TIMEOUT = 60   # seconds to wait for the API to respond
+_DOWNLOAD_TIMEOUT = 120  # seconds to download the returned MP3 link
+
+
+def _download_via_rapidapi(video_id: str, dest: Path, api_key: str) -> None:
+    """
+    Call youtube-mp36.p.rapidapi.com to get a direct MP3 link,
+    then stream-download that link to `dest`.
+
+    API docs: GET https://youtube-mp36.p.rapidapi.com/dl?id=VIDEO_ID
+    Response: { "status": "ok", "link": "https://...", "title": "...", ... }
+    """
+    logger.info(f"[rapidapi] Fetching MP3 link for video_id={video_id}")
+
+    try:
+        resp = http_requests.get(
+            f"https://{_RAPIDAPI_HOST}/dl",
+            params={"id": video_id},
+            headers={
+                "x-rapidapi-host": _RAPIDAPI_HOST,
+                "x-rapidapi-key": api_key,
+            },
+            timeout=_RAPIDAPI_TIMEOUT,
+        )
+    except http_requests.Timeout:
+        raise RuntimeError(f"RapidAPI timed out after {_RAPIDAPI_TIMEOUT}s")
+    except http_requests.ConnectionError as exc:
+        raise RuntimeError(f"Cannot reach RapidAPI: {exc}")
+
+    if resp.status_code == 429:
+        raise RuntimeError("RapidAPI rate limit hit. Free tier quota exhausted for today.")
+    if resp.status_code == 403:
+        raise RuntimeError("RapidAPI key invalid or subscription expired.")
+    if not resp.ok:
+        raise RuntimeError(f"RapidAPI returned HTTP {resp.status_code}: {resp.text[:200]}")
+
+    try:
+        data = resp.json()
+    except Exception:
+        raise RuntimeError(f"RapidAPI returned non-JSON: {resp.text[:200]}")
+
+    status = data.get("status", "")
+    if status != "ok":
+        msg = data.get("msg", data.get("error", str(data)))
+        raise RuntimeError(f"RapidAPI error: {msg}")
+
+    mp3_url = data.get("link", "")
+    if not mp3_url:
+        raise RuntimeError("RapidAPI response missing 'link' field.")
+
+    title = data.get("title", "unknown")
+    logger.info(f"[rapidapi] Got MP3 link for '{title}' — downloading...")
+
+    # Download the MP3 from the returned URL
+    try:
+        with http_requests.get(mp3_url, stream=True, timeout=_DOWNLOAD_TIMEOUT) as dl:
+            dl.raise_for_status()
+            with open(dest, "wb") as fh:
+                for chunk in dl.iter_content(chunk_size=1 << 20):  # 1 MB chunks
+                    fh.write(chunk)
+    except http_requests.Timeout:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("Timed out downloading MP3 from RapidAPI link.")
+    except http_requests.HTTPError as exc:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"Failed to download MP3: {exc}")
+
+    size_kb = dest.stat().st_size // 1024
+    if size_kb == 0:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("Downloaded MP3 file is empty.")
+
+    logger.info(f"[rapidapi] Download complete: {dest.name} ({size_kb} KB) ✓")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Strategy B — yt-dlp  (FALLBACK)
+# ─────────────────────────────────────────────────────────────────────────────
+_YTDLP_TIMEOUT = 150  # seconds
+
+
+def _download_via_ytdlp(url: str, dest: Path) -> None:
+    """
+    Run yt-dlp as a subprocess to download + convert audio to MP3.
+    Fallback when RAPIDAPI_KEY is not set.
+    Supports YOUTUBE_COOKIES / YTDLP_COOKIES_FILE env vars.
+    """
+    output_template = str(dest.parent / "audio.%(ext)s")
+
+    # ── Cookie support ────────────────────────────────────────────────────────
+    cookie_args: list[str] = []
+    _tmp_cookie_path: Path | None = None
+
+    cookie_file_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookie_file_path and Path(cookie_file_path).is_file():
+        cookie_args = ["--cookies", cookie_file_path]
+        logger.info(f"[ytdlp] Using cookie file: {cookie_file_path}")
+    else:
+        cookie_text = os.environ.get("YOUTUBE_COOKIES", "").strip()
+        if cookie_text:
+            _tmp_cookie_path = Path(tempfile.mktemp(suffix="_yt_cookies.txt"))
+            try:
+                _tmp_cookie_path.write_text(cookie_text, encoding="utf-8")
+                cookie_args = ["--cookies", str(_tmp_cookie_path)]
+                logger.info("[ytdlp] Using cookies from YOUTUBE_COOKIES env var")
+            except OSError as exc:
+                logger.warning(f"[ytdlp] Could not write temp cookie file: {exc} — proceeding without cookies")
+    # ─────────────────────────────────────────────────────────────────────────
+
+    cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "--format", "bestaudio/best",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "128K",
+        "--output", output_template,
+        "--no-warnings",
+        "--force-ipv4",
+        "--extractor-args", "youtube:player_client=android,web",
+        *cookie_args,
+        url,
+    ]
+
+    logger.info(f"[ytdlp] Running yt-dlp for: {url}")
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_YTDLP_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("yt-dlp timed out.")
+    finally:
+        # Always clean up temp cookie file
+        if _tmp_cookie_path and _tmp_cookie_path.exists():
+            try:
+                _tmp_cookie_path.unlink()
+            except OSError:
+                pass
+
+    if result.returncode != 0:
+        stderr = result.stderr[-500:] if result.stderr else "(no stderr)"
+        logger.error(f"[ytdlp] Failed (rc={result.returncode}): {stderr}")
+        lower = stderr.lower()
+        if "sign in" in lower or "bot" in lower:
+            raise RuntimeError("YouTube bot detection triggered. Set RAPIDAPI_KEY to bypass.")
+        if any(k in lower for k in ("private video", "video unavailable", "age-restricted",
+                                     "geo-restricted", "members only")):
+            raise RuntimeError("Video is unavailable, private, age-restricted, or geo-blocked.")
+        raise RuntimeError(f"yt-dlp failed: {stderr[-200:]}")
+
+    # yt-dlp writes to audio.<ext> — rename to dest
+    tmpdir = dest.parent
+    mp3_files = list(tmpdir.glob("*.mp3"))
+    if mp3_files:
+        mp3_files[0].rename(dest)
+    else:
+        all_files = [f for f in tmpdir.iterdir() if f.is_file()]
+        if not all_files:
+            raise RuntimeError("yt-dlp produced no output file.")
+        all_files[0].rename(dest)
+
+    size_kb = dest.stat().st_size // 1024
+    if size_kb == 0:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("yt-dlp produced an empty file.")
+
+    logger.info(f"[ytdlp] Download complete: {dest.name} ({size_kb} KB) ✓")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,8 +307,12 @@ def _validate_youtube_url(url: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    """Liveness check — Fly.io and the HF backend call this to verify the relay is up."""
-    return {"status": "ok"}
+    """Liveness check."""
+    rapidapi_configured = bool(os.environ.get("RAPIDAPI_KEY", "").strip())
+    return {
+        "status": "ok",
+        "strategy": "rapidapi" if rapidapi_configured else "ytdlp-fallback",
+    }
 
 
 @app.post("/extract")
@@ -110,12 +323,9 @@ def extract(
     """
     Download audio from a YouTube URL and return it as an MP3 stream.
 
-    Steps:
-      1. Verify X-Relay-Key auth header.
-      2. Validate the URL is a YouTube URL.
-      3. Run yt-dlp to download best audio, convert to mp3.
-      4. Stream the mp3 back as the response body.
-      5. Delete the temp file immediately after streaming.
+    Strategy:
+      - If RAPIDAPI_KEY is set → use RapidAPI youtube-mp36 (reliable, no bot issues)
+      - Otherwise             → fall back to yt-dlp (may be blocked on datacenter IPs)
     """
     # 1. Auth
     _verify_key(x_relay_key)
@@ -126,122 +336,42 @@ def extract(
     # 2. URL validation
     _validate_youtube_url(url)
 
-    # 3. Download via yt-dlp into a temp directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_template = str(Path(tmpdir) / "audio.%(ext)s")
+    # 3. Prepare a persistent temp file for the audio output
+    persistent_tmp = Path(tempfile.mktemp(suffix=".mp3"))
 
-        # ── Cookie support ────────────────────────────────────────────────────
-        # Prefer a pre-existing file path, fall back to raw cookie text written
-        # to a temp file.  The cookie file is deleted after yt-dlp exits.
-        cookie_args: list[str] = []
-        _tmp_cookie_path: Path | None = None
+    try:
+        rapidapi_key = os.environ.get("RAPIDAPI_KEY", "").strip()
 
-        cookie_file_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
-        if cookie_file_path and Path(cookie_file_path).is_file():
-            cookie_args = ["--cookies", cookie_file_path]
-            logger.info(f"[extract] Using cookie file: {cookie_file_path}")
+        if rapidapi_key:
+            # ── Strategy A: RapidAPI ──────────────────────────────────────────
+            logger.info("[extract] Strategy: RapidAPI youtube-mp36")
+            video_id = _extract_video_id(url)
+            _download_via_rapidapi(video_id, persistent_tmp, rapidapi_key)
+
         else:
-            cookie_text = os.environ.get("YOUTUBE_COOKIES", "").strip()
-            if cookie_text:
-                _tmp_cookie_path = Path(tempfile.mktemp(suffix="_yt_cookies.txt"))
-                try:
-                    _tmp_cookie_path.write_text(cookie_text, encoding="utf-8")
-                    cookie_args = ["--cookies", str(_tmp_cookie_path)]
-                    logger.info("[extract] Using cookies from YOUTUBE_COOKIES env var")
-                except OSError as exc:
-                    logger.warning(f"[extract] Could not write temp cookie file: {exc} — proceeding without cookies")
-            else:
-                logger.debug("[extract] No cookies configured — proceeding without authentication")
-        # ─────────────────────────────────────────────────────────────────────
-
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "--format", "bestaudio/best",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "--audio-quality", "128K",
-            "--output", output_template,
-            "--no-warnings",
-            "--force-ipv4",
-            "--extractor-args", "youtube:player_client=android,web",
-            *cookie_args,
-            url,
-        ]
-
-        logger.info(f"[extract] Running yt-dlp for: {url}")
-        try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=150,  # give yt-dlp 2.5 min max
+            # ── Strategy B: yt-dlp fallback ───────────────────────────────────
+            logger.warning(
+                "[extract] RAPIDAPI_KEY not set — falling back to yt-dlp. "
+                "This will likely fail on Render due to YouTube IP blocks."
             )
-        except subprocess.TimeoutExpired:
-            logger.error("[extract] yt-dlp timed out")
-            raise HTTPException(
-                status_code=504,
-                detail="yt-dlp timed out while downloading the video."
-            )
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dest = Path(tmpdir) / "audio.mp3"
+                _download_via_ytdlp(url, dest)
+                # Move out of the temp dir before it's deleted
+                import shutil
+                shutil.copy2(dest, persistent_tmp)
 
-        # Clean up temp cookie file regardless of success/failure
-        if _tmp_cookie_path and _tmp_cookie_path.exists():
-            try:
-                _tmp_cookie_path.unlink()
-                logger.debug(f"[extract] Deleted temp cookie file: {_tmp_cookie_path.name}")
-            except OSError as exc:
-                logger.warning(f"[extract] Could not delete temp cookie file: {exc}")
+    except RuntimeError as exc:
+        persistent_tmp.unlink(missing_ok=True)
+        logger.error(f"[extract] Download failed: {exc}")
+        raise HTTPException(status_code=422, detail=str(exc))
 
-        if result.returncode != 0:
-            stderr_snippet = result.stderr[-500:] if result.stderr else "(no stderr)"
-            logger.error(f"[extract] yt-dlp failed (rc={result.returncode}): {stderr_snippet}")
+    except Exception as exc:
+        persistent_tmp.unlink(missing_ok=True)
+        logger.error(f"[extract] Unexpected error: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal relay error.")
 
-            # Detect common non-retryable errors and give a helpful message
-            lower = stderr_snippet.lower()
-            if "sign in" in lower or "bot" in lower:
-                raise HTTPException(
-                    status_code=422,
-                    detail="YouTube requires authentication. Cookies may be missing or expired."
-                )
-            if any(kw in lower for kw in ("private video", "video unavailable", "age-restricted",
-                                           "geo-restricted", "members only")):
-                raise HTTPException(
-                    status_code=422,
-                    detail="Video is unavailable, private, age-restricted, or geo-blocked."
-                )
-            raise HTTPException(
-                status_code=502,
-                detail=f"yt-dlp extraction failed. The video may be unavailable. "
-                       f"Details: {stderr_snippet[-200:]}"
-            )
-
-        # Find the downloaded file
-        mp3_files = list(Path(tmpdir).glob("*.mp3"))
-        if not mp3_files:
-            # yt-dlp may have produced a different extension — grab whatever is there
-            all_files = list(Path(tmpdir).iterdir())
-            if not all_files:
-                logger.error("[extract] yt-dlp produced no output file")
-                raise HTTPException(status_code=502, detail="yt-dlp produced no output file.")
-            audio_file = all_files[0]
-        else:
-            audio_file = mp3_files[0]
-
-        size_kb = audio_file.stat().st_size // 1024
-        logger.info(f"[extract] Download complete: {audio_file.name} ({size_kb} KB) — streaming back")
-
-        if size_kb == 0:
-            raise HTTPException(status_code=502, detail="yt-dlp produced an empty file.")
-
-        # 4. Stream back — FileResponse reads the file before the temp dir is deleted
-        # We copy to a second temp file outside the TemporaryDirectory so it persists
-        # through the response streaming.
-        import shutil
-        persistent_tmp = Path(tempfile.mktemp(suffix=".mp3"))
-        shutil.copy2(audio_file, persistent_tmp)
-
-    # 5. Return the file; background task cleans it up after streaming
+    # 4. Stream the file back, clean up after
     from fastapi.background import BackgroundTasks
     bg = BackgroundTasks()
     bg.add_task(_delete_file, persistent_tmp)
