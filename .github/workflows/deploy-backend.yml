@@ -19,10 +19,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Trigger Render deploy hook
-        # Add your Render Deploy Hook URL as a GitHub secret named RENDER_DEPLOY_HOOK_URL
+        # RENDER_DEPLOY_HOOK_URL must be added as a GitHub secret.
         # Get it from: Render Dashboard → Service → Settings → Deploy Hook → Copy URL
+        # If the secret is not yet set, this step is skipped gracefully.
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "⚠️  RENDER_DEPLOY_HOOK_URL secret not set — skipping deploy hook."
+            echo "   Render auto-deploys from GitHub directly, so this is fine."
+            echo "   To enable this step: Render Dashboard → Service → Settings → Deploy Hook → copy URL"
+            echo "   Then add it as a GitHub secret named RENDER_DEPLOY_HOOK_URL."
+            exit 0
+          fi
+          echo "🚀 Triggering Render deploy..."
           curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
-          echo "Deploy hook triggered successfully."
+          echo "✅ Deploy hook triggered successfully."
