@@ -26,15 +26,15 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ -z "$HF_TOKEN" ]; then
-            echo "⚠️ HF_TOKEN secret not set — skipping Hugging Face deployment."
-            exit 0
+            echo "❌ HF_TOKEN secret is empty! You must add HF_TOKEN to GitHub Secrets."
+            exit 1
           fi
           echo "🚀 Installing huggingface_hub..."
           pip install huggingface_hub
           
           echo "🚀 Pushing backend to Hugging Face Spaces..."
-          # Sync the 'backend' folder to the root of the HF Space repository
-          huggingface-cli upload Gurshameer/CaptionForge-API ./backend . --repo-type space --token $HF_TOKEN
+          cd backend
+          huggingface-cli upload Gurshameer/CaptionForge-API . . --repo-type space --token $HF_TOKEN
           echo "✅ Successfully pushed to Hugging Face Spaces!"
 
       # ---------------------------------------------------------
