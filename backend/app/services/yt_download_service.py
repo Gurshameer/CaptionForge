@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable
@@ -301,6 +302,20 @@ def _provider_ytmp3(url: str, task_id: str) -> Path:
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider C — yt-dlp direct (legacy, usually fails on HF datacenter IPs)
 # ─────────────────────────────────────────────────────────────────────────────
+def _get_ffmpeg_location() -> str | None:
+    """Return the directory containing the ffmpeg binary (for yt-dlp's ffmpeg_location)."""
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+        import shutil
+        path = shutil.which("ffmpeg")
+        if path:
+            return str(Path(path).parent)
+    except ImportError:
+        pass
+    return None  # yt-dlp will search PATH
+
+
 def _build_ytdlp_opts(task_id: str, player_clients: list[str]) -> dict:
     outtmpl = str(settings.upload_path / f"{task_id}.%(ext)s")
     opts: dict = {
@@ -315,6 +330,9 @@ def _build_ytdlp_opts(task_id: str, player_clients: list[str]) -> dict:
         "socket_timeout":      30,
         "retries":             1,
     }
+    ffmpeg_dir = _get_ffmpeg_location()
+    if ffmpeg_dir:
+        opts["ffmpeg_location"] = ffmpeg_dir
     proxy = os.environ.get("YTDLP_PROXY", "").strip()
     if proxy:
         opts["proxy"] = proxy
@@ -326,7 +344,7 @@ def _build_ytdlp_opts(task_id: str, player_clients: list[str]) -> dict:
     else:
         cookie_text = os.environ.get("YOUTUBE_COOKIES", "").strip()
         if cookie_text:
-            tmp = "/tmp/youtube_cookies.txt"
+            tmp = os.path.join(tempfile.gettempdir(), "youtube_cookies.txt")
             try:
                 with open(tmp, "w", encoding="utf-8") as f:
                     f.write(cookie_text)

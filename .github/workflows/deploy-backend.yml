@@ -1,31 +1,28 @@
-name: Deploy Backend to Hugging Face Spaces
+name: Deploy Backend to Render
 
 on:
   push:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "render.yaml"
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment:
-      name: huggingface-space
-      url: https://Gurshameer-CaptionForge-API.hf.space/docs
+      name: render
+      url: https://captionforge-api.onrender.com/docs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Push to Hugging Face Space
+      - name: Trigger Render deploy hook
+        # Add your Render Deploy Hook URL as a GitHub secret named RENDER_DEPLOY_HOOK_URL
+        # Get it from: Render Dashboard → Service → Settings → Deploy Hook → Copy URL
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          cd backend
-          git init
-          git branch -M main
-          git config user.email "action@github.com"
-          git config user.name "GitHub Action"
-          git add .
-          git commit -m "Deploy backend from GitHub"
-          git push --force https://Gurshameer:$HF_TOKEN@huggingface.co/spaces/Gurshameer/CaptionForge-API main
+          curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "Deploy hook triggered successfully."
