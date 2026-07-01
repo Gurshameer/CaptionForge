@@ -128,9 +128,12 @@ def _extract_video_id(url: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Strategy A — RapidAPI youtube-mp36  (PRIMARY)
 # ─────────────────────────────────────────────────────────────────────────────
-_RAPIDAPI_HOST = "youtube-mp36.p.rapidapi.com"
-_RAPIDAPI_TIMEOUT = 60   # seconds to wait for the API to respond
-_DOWNLOAD_TIMEOUT = 120  # seconds to download the returned MP3 link
+_RAPIDAPI_HOST        = "youtube-mp36.p.rapidapi.com"
+_RAPIDAPI_TIMEOUT     = 60   # seconds to wait for API to respond
+_RAPIDAPI_MAX_RETRIES = 10   # max polling + CDN retry attempts
+_RAPIDAPI_RETRY_DELAY = 3    # seconds between retries
+_DOWNLOAD_TIMEOUT     = 120  # seconds to download the returned MP3 link
+
 
 
 def _download_via_rapidapi(video_id: str, dest: Path, api_key: str) -> None:
@@ -138,63 +141,114 @@ def _download_via_rapidapi(video_id: str, dest: Path, api_key: str) -> None:
     Call youtube-mp36.p.rapidapi.com to get a direct MP3 link,
     then stream-download that link to `dest`.
 
-    API docs: GET https://youtube-mp36.p.rapidapi.com/dl?id=VIDEO_ID
+    The API converts asynchronously — the CDN link can return 404 for several
+    seconds while conversion is still running.  We poll the API and retry the
+    download up to _RAPIDAPI_MAX_RETRIES times with _RAPIDAPI_RETRY_DELAY
+    seconds between attempts.
+
+    API: GET https://youtube-mp36.p.rapidapi.com/dl?id=VIDEO_ID
     Response: { "status": "ok", "link": "https://...", "title": "...", ... }
+              { "status": "processing", "progress": 50, ... }  ← retry needed
     """
-    logger.info(f"[rapidapi] Fetching MP3 link for video_id={video_id}")
+    import time
 
-    try:
-        resp = http_requests.get(
-            f"https://{_RAPIDAPI_HOST}/dl",
-            params={"id": video_id},
-            headers={
-                "x-rapidapi-host": _RAPIDAPI_HOST,
-                "x-rapidapi-key": api_key,
-            },
-            timeout=_RAPIDAPI_TIMEOUT,
-        )
-    except http_requests.Timeout:
-        raise RuntimeError(f"RapidAPI timed out after {_RAPIDAPI_TIMEOUT}s")
-    except http_requests.ConnectionError as exc:
-        raise RuntimeError(f"Cannot reach RapidAPI: {exc}")
+    _headers = {
+        "x-rapidapi-host": _RAPIDAPI_HOST,
+        "x-rapidapi-key": api_key,
+    }
 
-    if resp.status_code == 429:
-        raise RuntimeError("RapidAPI rate limit hit. Free tier quota exhausted for today.")
-    if resp.status_code == 403:
-        raise RuntimeError("RapidAPI key invalid or subscription expired.")
-    if not resp.ok:
-        raise RuntimeError(f"RapidAPI returned HTTP {resp.status_code}: {resp.text[:200]}")
+    # ── Step 1: Poll the API until status == "ok" ────────────────────────────
+    mp3_url: str = ""
+    title: str = "unknown"
 
-    try:
-        data = resp.json()
-    except Exception:
-        raise RuntimeError(f"RapidAPI returned non-JSON: {resp.text[:200]}")
+    for attempt in range(1, _RAPIDAPI_MAX_RETRIES + 1):
+        logger.info(f"[rapidapi] Polling API for video_id={video_id} (attempt {attempt}/{_RAPIDAPI_MAX_RETRIES})")
+        try:
+            resp = http_requests.get(
+                f"https://{_RAPIDAPI_HOST}/dl",
+                params={"id": video_id},
+                headers=_headers,
+                timeout=_RAPIDAPI_TIMEOUT,
+            )
+        except http_requests.Timeout:
+            raise RuntimeError(f"RapidAPI timed out after {_RAPIDAPI_TIMEOUT}s")
+        except http_requests.ConnectionError as exc:
+            raise RuntimeError(f"Cannot reach RapidAPI: {exc}")
 
-    status = data.get("status", "")
-    if status != "ok":
+        if resp.status_code == 429:
+            raise RuntimeError("RapidAPI rate limit hit. Free tier quota exhausted for today.")
+        if resp.status_code == 403:
+            raise RuntimeError("RapidAPI key invalid or subscription expired.")
+        if not resp.ok:
+            raise RuntimeError(f"RapidAPI returned HTTP {resp.status_code}: {resp.text[:200]}")
+
+        try:
+            data = resp.json()
+        except Exception:
+            raise RuntimeError(f"RapidAPI returned non-JSON: {resp.text[:200]}")
+
+        status = data.get("status", "")
+        if status == "ok":
+            mp3_url = data.get("link", "")
+            title = data.get("title", "unknown")
+            if mp3_url:
+                logger.info(f"[rapidapi] Link ready for '{title}' on attempt {attempt}")
+                break
+            raise RuntimeError("RapidAPI returned status=ok but no 'link' field.")
+
+        if status in ("processing", "running", "pending", "waiting"):
+            progress = data.get("progress", "?")
+            logger.info(f"[rapidapi] Conversion in progress ({progress}%) — waiting {_RAPIDAPI_RETRY_DELAY}s...")
+            time.sleep(_RAPIDAPI_RETRY_DELAY)
+            continue
+
+        # Unknown / error status
         msg = data.get("msg", data.get("error", str(data)))
         raise RuntimeError(f"RapidAPI error: {msg}")
+    else:
+        raise RuntimeError(
+            f"RapidAPI conversion did not complete after {_RAPIDAPI_MAX_RETRIES} attempts. "
+            "The video may be too long or the service is busy."
+        )
 
-    mp3_url = data.get("link", "")
-    if not mp3_url:
-        raise RuntimeError("RapidAPI response missing 'link' field.")
+    # ── Step 2: Download the MP3 — retry on 404 (CDN may lag behind) ────────
+    _cdn_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": f"https://{_RAPIDAPI_HOST}/",
+        "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.8",
+    }
 
-    title = data.get("title", "unknown")
-    logger.info(f"[rapidapi] Got MP3 link for '{title}' — downloading...")
-
-    # Download the MP3 from the returned URL
-    try:
-        with http_requests.get(mp3_url, stream=True, timeout=_DOWNLOAD_TIMEOUT) as dl:
-            dl.raise_for_status()
-            with open(dest, "wb") as fh:
-                for chunk in dl.iter_content(chunk_size=1 << 20):  # 1 MB chunks
-                    fh.write(chunk)
-    except http_requests.Timeout:
+    for dl_attempt in range(1, _RAPIDAPI_MAX_RETRIES + 1):
+        logger.info(f"[rapidapi] Downloading MP3 (attempt {dl_attempt}/{_RAPIDAPI_MAX_RETRIES}): {mp3_url[:80]}...")
+        try:
+            with http_requests.get(
+                mp3_url,
+                headers=_cdn_headers,
+                stream=True,
+                timeout=_DOWNLOAD_TIMEOUT,
+            ) as dl:
+                if dl.status_code == 404:
+                    logger.warning(f"[rapidapi] CDN returned 404 — conversion not ready yet, waiting {_RAPIDAPI_RETRY_DELAY}s...")
+                    import time as _time
+                    _time.sleep(_RAPIDAPI_RETRY_DELAY)
+                    continue
+                dl.raise_for_status()
+                with open(dest, "wb") as fh:
+                    for chunk in dl.iter_content(chunk_size=1 << 20):  # 1 MB chunks
+                        fh.write(chunk)
+                break  # success
+        except http_requests.Timeout:
+            dest.unlink(missing_ok=True)
+            raise RuntimeError("Timed out downloading MP3 from RapidAPI CDN link.")
+        except http_requests.HTTPError as exc:
+            dest.unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to download MP3 from CDN: {exc}")
+    else:
         dest.unlink(missing_ok=True)
-        raise RuntimeError("Timed out downloading MP3 from RapidAPI link.")
-    except http_requests.HTTPError as exc:
-        dest.unlink(missing_ok=True)
-        raise RuntimeError(f"Failed to download MP3: {exc}")
+        raise RuntimeError(
+            f"CDN link returned 404 after {_RAPIDAPI_MAX_RETRIES} retries. "
+            "The RapidAPI conversion may have failed silently."
+        )
 
     size_kb = dest.stat().st_size // 1024
     if size_kb == 0:
