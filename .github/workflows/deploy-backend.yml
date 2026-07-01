@@ -29,16 +29,12 @@ jobs:
             echo "⚠️ HF_TOKEN secret not set — skipping Hugging Face deployment."
             exit 0
           fi
+          echo "🚀 Installing huggingface_hub..."
+          pip install huggingface_hub
+          
           echo "🚀 Pushing backend to Hugging Face Spaces..."
-          cd backend
-          git init
-          git branch -M main
-          git config user.email "action@github.com"
-          git config user.name "GitHub Action"
-          git add .
-          git commit -m "Deploy backend from GitHub"
-          # Force push to the HF Space
-          git push --force https://Gurshameer:$HF_TOKEN@huggingface.co/spaces/Gurshameer/CaptionForge-API main
+          # Sync the 'backend' folder to the root of the HF Space repository
+          huggingface-cli upload Gurshameer/CaptionForge-API ./backend . --repo-type space --token $HF_TOKEN
           echo "✅ Successfully pushed to Hugging Face Spaces!"
 
       # ---------------------------------------------------------
