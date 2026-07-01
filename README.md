@@ -1,6 +1,6 @@
 # CaptionForge & AI Voice Studio
 
-A complete, modern toolkit for video localization, sub-titling, and hyper-realistic voice dubbing. Powered by Faster-Whisper for insanely fast transcriptions and ChatTTSbox for broadcast-quality voice cloning.
+CaptionForge is an AI-powered video localization platform that generates subtitles, clones voices, and creates dubbed audio using open-source AI models.
 
 <p align="center">
   <img src="screenshots/hero.png" alt="CaptionForge Hero" width="800"/>
