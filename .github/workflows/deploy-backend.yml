@@ -1,26 +1,35 @@
-name: Deploy Backend to Hugging Face Spaces
+name: Deploy Backend & Relay
 
 on:
   push:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "relay/**"
+      - "render.yaml"
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: huggingface-space
-      url: https://Gurshameer-CaptionForge-API.hf.space/docs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for force-pushing to HF Spaces
 
-      - name: Push to Hugging Face Space
+      # ---------------------------------------------------------
+      # 1. Deploy the main backend to Hugging Face Spaces
+      # ---------------------------------------------------------
+      - name: Push Backend to Hugging Face Spaces
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "⚠️ HF_TOKEN secret not set — skipping Hugging Face deployment."
+            exit 0
+          fi
+          echo "🚀 Pushing backend to Hugging Face Spaces..."
           cd backend
           git init
           git branch -M main
@@ -28,4 +37,22 @@ jobs:
           git config user.name "GitHub Action"
           git add .
           git commit -m "Deploy backend from GitHub"
+          # Force push to the HF Space
           git push --force https://Gurshameer:$HF_TOKEN@huggingface.co/spaces/Gurshameer/CaptionForge-API main
+          echo "✅ Successfully pushed to Hugging Face Spaces!"
+
+      # ---------------------------------------------------------
+      # 2. Trigger Render Deploy Hook for the Relay
+      # ---------------------------------------------------------
+      - name: Trigger Render Deploy Hook (Relay)
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "⚠️ RENDER_DEPLOY_HOOK_URL secret not set — skipping Render hook."
+            echo "   (If you connected Render directly to GitHub, it will auto-deploy anyway)."
+            exit 0
+          fi
+          echo "🚀 Triggering Render deploy for the Relay..."
+          curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "✅ Render deploy hook triggered successfully!"
