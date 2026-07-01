@@ -15,5 +15,3 @@ yt-dlp>=2024.10.7
 curl_cffi
 certifi
 requests
-# Provides a static ffmpeg binary via pip — works on Render free tier (no apt/root needed)
-static-ffmpeg>=2.5
