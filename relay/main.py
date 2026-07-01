@@ -130,7 +130,8 @@ def extract(
             "--audio-quality", "128K",
             "--output", output_template,
             "--no-warnings",
-            "--extractor-args", "youtube:player_client=android",
+            "--force-ipv4",
+            "--extractor-args", "youtube:player_client=android,web",
             url,
         ]
 
